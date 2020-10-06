@@ -13280,9 +13280,13 @@ TEST_F(VkSyncValTest, SyncRenderPassBeginTransitionHazard) {
     // A global execution barrier that the implict external dependency can chain with should work...
     vk::CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 0,
                            nullptr);
-    m_commandBuffer->BeginRenderPass(m_renderPassBeginInfo);
-    m_commandBuffer->EndRenderPass();
     m_errorMonitor->VerifyNotFound();
+
+    // With the barrier above, the layout transition has a chained "availability" memory sync operation, but the default
+    // implict VkSubpassDependency doesn't safe the load op clear vs. the layout transition... so we fail there.
+    m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT, "SYNC-HAZARD-WRITE_AFTER_WRITE");
+    m_commandBuffer->BeginRenderPass(m_renderPassBeginInfo);
+    m_errorMonitor->VerifyFound();
 }
 
 TEST_F(VkSyncValTest, SyncCmdDispatchDrawHazards) {
@@ -14080,7 +14084,7 @@ TEST_F(VkSyncValTest, SyncCmdDrawDepthStencil) {
     vk::DestroyFramebuffer(m_device->device(), fb_st, nullptr);
 }
 
-TEST_F(VkSyncValTest, SyncRenderPassWithWrongInitialLayout) {
+TEST_F(VkSyncValTest, RenderPassLoadHazardVsInitialLayout) {
     ASSERT_NO_FATAL_FAILURE(InitSyncValFramework());
     ASSERT_NO_FATAL_FAILURE(InitState());
     ASSERT_NO_FATAL_FAILURE(InitRenderTarget());
@@ -14105,7 +14109,7 @@ TEST_F(VkSyncValTest, SyncRenderPassWithWrongInitialLayout) {
         // Input attachment
         {(VkAttachmentDescriptionFlags)0, VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_LOAD,
          VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
-         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}};
+         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}};
 
     const VkAttachmentReference resultAttachmentRef = {0u, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
     const VkAttachmentReference inputAttachmentRef = {1u, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
@@ -14123,9 +14127,9 @@ TEST_F(VkSyncValTest, SyncRenderPassWithWrongInitialLayout) {
 
     const VkSubpassDependency subpassDependency = {VK_SUBPASS_EXTERNAL,
                                                    0,
-                                                   VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                                   VK_PIPELINE_STAGE_TRANSFER_BIT,
                                                    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                                                   VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                                                   VK_ACCESS_TRANSFER_WRITE_BIT,
                                                    VK_ACCESS_INPUT_ATTACHMENT_READ_BIT | VK_ACCESS_SHADER_READ_BIT,
                                                    VK_DEPENDENCY_BY_REGION_BIT};
 
@@ -14145,12 +14149,21 @@ TEST_F(VkSyncValTest, SyncRenderPassWithWrongInitialLayout) {
     VkFramebufferCreateInfo fbci = {VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, nullptr, 0, rp, 2, attachments, 32, 32, 1};
     ASSERT_VK_SUCCESS(vk::CreateFramebuffer(device(), &fbci, nullptr, &fb));
 
+    image_input.SetLayout(VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
     m_commandBuffer->begin();
+
+    // If we have no accesses, then we have no accesses to validate against, so create an access record the barriers can
+    // be applied against.
+    VkClearColorValue black = {};
+    VkImageSubresourceRange full_subresource_range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vk::CmdClearColorImage(m_commandBuffer->handle(), image_input.handle(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1,
+                           &full_subresource_range);
     m_renderPassBeginInfo.renderArea = {{0, 0}, {32, 32}};
     m_renderPassBeginInfo.renderPass = rp;
     m_renderPassBeginInfo.framebuffer = fb;
 
-    m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT, "SYNC-HAZARD-WRITE_AFTER_WRITE");
+    m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT, "SYNC-HAZARD-READ_AFTER_WRITE");
     m_commandBuffer->BeginRenderPass(m_renderPassBeginInfo);
     m_errorMonitor->VerifyFound();
 }
