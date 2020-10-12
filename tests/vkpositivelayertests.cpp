@@ -9697,6 +9697,86 @@ TEST_F(VkPositiveLayerTest, SwapchainExclusiveModeQueueFamilyPropertiesReference
     }
 }
 
+TEST_F(VkPositiveLayerTest, VerifyLayoutInArrayTexture) {
+    TEST_DESCRIPTION("Ensure layout validation that only do the index of array texture that is used in shader");
+    ASSERT_NO_FATAL_FAILURE(Init());
+    ASSERT_NO_FATAL_FAILURE(InitRenderTarget());
+    m_errorMonitor->ExpectSuccess();
+
+    // arrayLAyer is 2.
+    VkImageUsageFlags usage = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL | VK_IMAGE_USAGE_SAMPLED_BIT;
+    VkFormat format = VK_FORMAT_R8G8B8A8_UNORM;
+    VkImageObj array_image(m_device);
+    auto image_ci = VkImageObj::ImageCreateInfo2D(128, 128, 1, 2, format, usage, VK_IMAGE_TILING_OPTIMAL);
+    array_image.InitNoLayout(image_ci);
+
+    // Only change layer:0 into VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL and ImageView layout is only 0.
+    // layer: 1 is still VK_IMAGE_LAYOUT_UNDEFINED.
+    VkImageMemoryBarrier barrier = {};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.srcAccessMask = 0;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.image = array_image.handle();
+    VkImageSubresourceRange range;
+    range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    range.baseMipLevel = 0;
+    range.levelCount = 1;
+    range.baseArrayLayer = 0;
+    range.layerCount = 1;
+    barrier.subresourceRange = range;
+
+    VkCommandBufferObj cmd_buf(m_device, m_commandPool);
+    cmd_buf.begin();
+    cmd_buf.PipelineBarrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1,
+                            &barrier);
+    cmd_buf.end();
+    cmd_buf.QueueCommandBuffer();
+
+    // ImageView covers the entire layers.
+    VkImageView view = array_image.targetView(format, VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_REMAINING_MIP_LEVELS, 0,
+                                              VK_REMAINING_ARRAY_LAYERS, VK_IMAGE_VIEW_TYPE_2D_ARRAY);
+
+    // Although it only uses layer:0, the validation verifies VkImageView, not shader, it triggers false positive since of layer:1.
+    static const char fs_source[] =
+        "#version 450\n"
+        "layout(set=0, binding=0) uniform sampler2DArray s;\n"
+        "layout(location=0) out vec4 x;\n"
+        "void main(){\n"
+        "   x = texture(s, vec3(0));\n"
+        "}\n";
+    VkShaderObj fs(m_device, fs_source, VK_SHADER_STAGE_FRAGMENT_BIT, this);
+
+    CreatePipelineHelper pipe(*this);
+    pipe.InitInfo();
+    pipe.shader_stages_ = {pipe.vs_->GetStageCreateInfo(), fs.GetStageCreateInfo()};
+    pipe.dsl_bindings_ = {{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
+    pipe.InitState();
+    pipe.CreateGraphicsPipeline();
+
+    VkSampler sampler = VK_NULL_HANDLE;
+    VkSamplerCreateInfo sampler_info = SafeSaneSamplerCreateInfo();
+    vk::CreateSampler(m_device->device(), &sampler_info, NULL, &sampler);
+
+    pipe.descriptor_set_->WriteDescriptorImageInfo(0, view, sampler, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+    pipe.descriptor_set_->UpdateDescriptorSets();
+
+    m_commandBuffer->begin();
+    m_commandBuffer->BeginRenderPass(m_renderPassBeginInfo);
+    vk::CmdBindPipeline(m_commandBuffer->handle(), VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipeline_);
+    vk::CmdBindDescriptorSets(m_commandBuffer->handle(), VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipeline_layout_.handle(), 0, 1,
+                              &pipe.descriptor_set_->set_, 0, nullptr);
+
+    vk::CmdDraw(m_commandBuffer->handle(), 1, 0, 0, 0);
+    m_commandBuffer->EndRenderPass();
+    m_commandBuffer->end();
+
+    m_commandBuffer->QueueCommandBuffer();
+
+    m_errorMonitor->VerifyNotFound();
+}
+
 // Android Hardware Buffer Positive Tests
 #ifdef VK_USE_PLATFORM_ANDROID_KHR
 #include "android_ndk_types.h"
