@@ -3487,6 +3487,28 @@ void SetPipelineState(PIPELINE_STATE *pPipe) {
     }
 }
 
+void UpdateSamplerDescriptorsUsedByImage(LAST_BOUND_STATE &last_bound_state) {
+    if (!last_bound_state.pipeline_state) return;
+    if (last_bound_state.per_set.empty()) return;
+
+    for (auto &slot : last_bound_state.pipeline_state->active_slots) {
+        for (auto &req : slot.second) {
+            for (auto &samplers : req.second.samplers_used_by_image) {
+                for (auto &sampler : samplers) {
+                    if (sampler.first.sampler_slot.first < last_bound_state.per_set.size() &&
+                        last_bound_state.per_set[sampler.first.sampler_slot.first].bound_descriptor_set) {
+                        const auto *descriptor = last_bound_state.per_set[sampler.first.sampler_slot.first]
+                                                     .bound_descriptor_set->GetDescriptorFromBinding(
+                                                         sampler.first.sampler_slot.second, sampler.first.sampler_index);
+
+                        sampler.second = static_cast<const cvdescriptorset::SamplerDescriptor *>(descriptor)->GetSamplerState();
+                    }
+                }
+            }
+        }
+    }
+}
+
 void ValidationStateTracker::PreCallRecordCmdBindPipeline(VkCommandBuffer commandBuffer, VkPipelineBindPoint pipelineBindPoint,
                                                           VkPipeline pipeline) {
     CMD_BUFFER_STATE *cb_state = GetCBState(commandBuffer);
@@ -3502,6 +3524,17 @@ void ValidationStateTracker::PreCallRecordCmdBindPipeline(VkCommandBuffer comman
     cb_state->lastBound[pipelineBindPoint].pipeline_state = pipe_state;
     SetPipelineState(pipe_state);
     AddCommandBufferBinding(pipe_state->cb_bindings, VulkanTypedHandle(pipeline, kVulkanObjectTypePipeline), cb_state);
+
+    for (auto &slot : pipe_state->active_slots) {
+        for (auto &req : slot.second) {
+            for (auto &sampler : req.second.samplers_used_by_image) {
+                for (auto &des : sampler) {
+                    des.second = nullptr;
+                }
+            }
+        }
+    }
+    UpdateSamplerDescriptorsUsedByImage(cb_state->lastBound[pipelineBindPoint]);
 }
 
 void ValidationStateTracker::PreCallRecordCmdSetViewport(VkCommandBuffer commandBuffer, uint32_t firstViewport,
@@ -3907,6 +3940,7 @@ void ValidationStateTracker::PreCallRecordCmdBindDescriptorSets(VkCommandBuffer 
                                   dynamicOffsetCount, pDynamicOffsets);
     cb_state->lastBound[pipelineBindPoint].pipeline_layout = layout;
     ResetCommandBufferPushConstantDataIfIncompatible(cb_state, layout);
+    UpdateSamplerDescriptorsUsedByImage(cb_state->lastBound[pipelineBindPoint]);
 }
 
 void ValidationStateTracker::RecordCmdPushDescriptorSetState(CMD_BUFFER_STATE *cb_state, VkPipelineBindPoint pipelineBindPoint,
@@ -5783,8 +5817,17 @@ void ValidationStateTracker::RecordPipelineShaderStage(VkPipelineShaderStageCrea
 
         pipeline->max_active_slot = std::max(pipeline->max_active_slot, slot);
         if (use.second.samplers_used_by_image.size()) {
-            pipeline->active_slots[slot][use.first.second].samplers_used_by_image[stage_state->stage_flag] =
-                &use.second.samplers_used_by_image;
+            auto &samplers_used_by_image = pipeline->active_slots[slot][use.first.second].samplers_used_by_image;
+            if (use.second.samplers_used_by_image.size() > samplers_used_by_image.size()) {
+                samplers_used_by_image.resize(use.second.samplers_used_by_image.size());
+            }
+            uint32_t image_index = 0;
+            for (const auto &samplers : use.second.samplers_used_by_image) {
+                for (const auto &sampler : samplers) {
+                    samplers_used_by_image[image_index].emplace(sampler, nullptr);
+                }
+                ++image_index;
+            }
         }
     }
 

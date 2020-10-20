@@ -169,15 +169,23 @@ extern unsigned DescriptorRequirementsBitsFromFormat(VkFormat fmt);
 typedef std::pair<unsigned, unsigned> descriptor_slot_t;
 
 struct SamplerUsedByImage {
-    uint32_t image_index;
     descriptor_slot_t sampler_slot;
     uint32_t sampler_index;
 };
 
+namespace std {
+template <>
+struct less<SamplerUsedByImage> {
+    bool operator()(const SamplerUsedByImage &left, const SamplerUsedByImage &right) const { return false; }
+};
+}  // namespace std
+
+struct SAMPLER_STATE;
 struct DescriptorReqirement {
     descriptor_req reqs;
-    std::map<VkShaderStageFlagBits, const std::vector<SamplerUsedByImage> *>
-        samplers_used_by_image;  // Refer from StageState.interface_var
+    std::vector<std::map<SamplerUsedByImage, const SAMPLER_STATE *>>
+        samplers_used_by_image;  // Copy from StageStCmdDrawDispatchInfoate.interface_var. It combines from plural shader stages.
+                                 // The index of array is index of image.
     DescriptorReqirement() : reqs(descriptor_req(0)) {}
 };
 
@@ -822,7 +830,8 @@ struct interface_var {
     uint32_t offset;
     uint32_t input_index;  // index = VK_ATTACHMENT_UNUSED means that it's not input attachment.
 
-    std::vector<SamplerUsedByImage> samplers_used_by_image;  // List of samplers that sample a given image
+    std::vector<std::set<SamplerUsedByImage>> samplers_used_by_image;  // List of samplers that sample a given image.
+                                                                       // The index of array is index of image.
 
     bool is_patch;
     bool is_block_member;
@@ -1229,7 +1238,7 @@ struct CMD_BUFFER_STATE : public BASE_NODE {
     struct CmdDrawDispatchInfo {
         CMD_TYPE cmd_type;
         std::string function;
-        std::vector<std::pair<uint32_t, DescriptorReqirement>> binding_infos;
+        std::vector<std::pair<const uint32_t, DescriptorReqirement>> binding_infos;
         VkFramebuffer framebuffer;
         std::vector<VkImageView> attachment_views;  // vector index is attachment index. If the value is VK_NULL_HANDLE(0),
                                                     // it means the attachment isn't used in this command.

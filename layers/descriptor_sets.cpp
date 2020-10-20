@@ -727,11 +727,34 @@ bool CoreChecks::ValidateDrawState(const DescriptorSet *descriptor_set, const st
     return result;
 }
 
+std::vector<const SAMPLER_STATE *> GetUnnormalizedCoordinatesSamplerStatesFromDescriptorSet(
+    const cvdescriptorset::DescriptorClass descriptor_class, const cvdescriptorset::Descriptor &descriptor,
+    const CMD_BUFFER_STATE &cb_node, std::pair<const uint32_t, DescriptorReqirement> &binding_info, uint32_t image_index) {
+    std::vector<const SAMPLER_STATE *> sampler_states;
+
+    if (descriptor_class == cvdescriptorset::DescriptorClass::ImageSampler) {
+        const cvdescriptorset::ImageSamplerDescriptor *image_descriptor =
+            static_cast<const cvdescriptorset::ImageSamplerDescriptor *>(&descriptor);
+        const auto *sampler_state = image_descriptor->GetSamplerState();
+
+        if (sampler_state->createInfo.unnormalizedCoordinates) sampler_states.emplace_back(sampler_state);
+
+    } else if (descriptor_class == cvdescriptorset::DescriptorClass::Image &&
+               binding_info.second.samplers_used_by_image.size() > image_index) {
+        for (auto &sampler : binding_info.second.samplers_used_by_image[image_index]) {
+            if (sampler.second) {
+                if (sampler.second->createInfo.unnormalizedCoordinates) sampler_states.emplace_back(sampler.second);
+            }
+        }
+    }
+    return sampler_states;
+}
+
 bool CoreChecks::ValidateDescriptorSetBindingData(const CMD_BUFFER_STATE *cb_node, const DescriptorSet *descriptor_set,
                                                   const std::vector<uint32_t> &dynamic_offsets,
-                                                  std::pair<uint32_t, DescriptorReqirement> binding_info, VkFramebuffer framebuffer,
-                                                  const std::vector<VkImageView> &attachment_views, const char *caller,
-                                                  const DrawDispatchVuid &vuids) const {
+                                                  std::pair<const uint32_t, DescriptorReqirement> &binding_info,
+                                                  VkFramebuffer framebuffer, const std::vector<VkImageView> &attachment_views,
+                                                  const char *caller, const DrawDispatchVuid &vuids) const {
     using DescriptorClass = cvdescriptorset::DescriptorClass;
     using BufferDescriptor = cvdescriptorset::BufferDescriptor;
     using ImageDescriptor = cvdescriptorset::ImageDescriptor;
@@ -833,33 +856,17 @@ bool CoreChecks::ValidateDescriptorSetBindingData(const CMD_BUFFER_STATE *cb_nod
                     VkImageView image_view;
                     VkImageLayout image_layout;
                     const IMAGE_VIEW_STATE *image_view_state;
-                    std::vector<const SAMPLER_STATE *> sampler_states;
 
                     if (descriptor_class == DescriptorClass::ImageSampler) {
                         const ImageSamplerDescriptor *image_descriptor = static_cast<const ImageSamplerDescriptor *>(descriptor);
                         image_view = image_descriptor->GetImageView();
                         image_view_state = image_descriptor->GetImageViewState();
                         image_layout = image_descriptor->GetImageLayout();
-                        sampler_states.emplace_back(image_descriptor->GetSamplerState());
                     } else {
                         const ImageDescriptor *image_descriptor = static_cast<const ImageDescriptor *>(descriptor);
                         image_view = image_descriptor->GetImageView();
                         image_view_state = image_descriptor->GetImageViewState();
                         image_layout = image_descriptor->GetImageLayout();
-
-                        for (const auto &stage_samples : binding_info.second.samplers_used_by_image) {
-                            for (const auto &sampler : *(stage_samples.second)) {
-                                if (sampler.image_index == index) {
-                                    const auto *descriptor2 =
-                                        cb_node->GetDescriptor(stage_samples.first, sampler.sampler_slot.first,
-                                                               sampler.sampler_slot.second, sampler.sampler_index);
-                                    if (descriptor2->GetClass() == DescriptorClass::PlainSampler) {
-                                        sampler_states.emplace_back(
-                                            static_cast<const SamplerDescriptor *>(descriptor2)->GetSamplerState());
-                                    }
-                                }
-                            }
-                        }
                     }
 
                     if (image_view) {
@@ -998,16 +1005,21 @@ bool CoreChecks::ValidateDescriptorSetBindingData(const CMD_BUFFER_STATE *cb_nod
                             }
                         }
 
-                        for (const auto &sampler_state : sampler_states) {
-                            if (!sampler_state || !sampler_state->createInfo.unnormalizedCoordinates) {
-                                continue;
-                            }
-                            // If ImageView is used by a unnormalizedCoordinates sampler, it needs to check ImageView type
-                            if (image_view_ci.viewType == VK_IMAGE_VIEW_TYPE_3D ||
-                                image_view_ci.viewType == VK_IMAGE_VIEW_TYPE_CUBE ||
-                                image_view_ci.viewType == VK_IMAGE_VIEW_TYPE_1D_ARRAY ||
-                                image_view_ci.viewType == VK_IMAGE_VIEW_TYPE_2D_ARRAY ||
-                                image_view_ci.viewType == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY) {
+                        // Here is some unnormalizedCoordinates sampler validations. But because it might take long time to find out
+                        // samplers, it will look for them when it needs.
+                        std::vector<const SAMPLER_STATE *> unnormalizedCoordinates_sampler_states;
+                        bool update_unnormalizedCoordinates_sampler_states = false;
+
+                        // If ImageView is used by a unnormalizedCoordinates sampler, it needs to check ImageView type
+                        if (image_view_ci.viewType == VK_IMAGE_VIEW_TYPE_3D || image_view_ci.viewType == VK_IMAGE_VIEW_TYPE_CUBE ||
+                            image_view_ci.viewType == VK_IMAGE_VIEW_TYPE_1D_ARRAY ||
+                            image_view_ci.viewType == VK_IMAGE_VIEW_TYPE_2D_ARRAY ||
+                            image_view_ci.viewType == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY) {
+                            update_unnormalizedCoordinates_sampler_states = true;
+                            unnormalizedCoordinates_sampler_states = GetUnnormalizedCoordinatesSamplerStatesFromDescriptorSet(
+                                descriptor_class, *descriptor, *cb_node, binding_info, index);
+
+                            for (const auto *sampler_state : unnormalizedCoordinates_sampler_states) {
                                 auto set = descriptor_set->GetSet();
                                 LogObjectList objlist(set);
                                 objlist.add(image_view);
@@ -1020,9 +1032,18 @@ bool CoreChecks::ValidateDescriptorSetBindingData(const CMD_BUFFER_STATE *cb_nod
                                                 string_VkImageViewType(image_view_ci.viewType), binding, index,
                                                 report_data->FormatHandle(sampler_state->sampler).c_str());
                             }
-                            // sampler must not be used with any of the SPIR-V OpImageSample* or OpImageSparseSample* instructions
-                            // with ImplicitLod, Dref or Proj in their name
-                            if (reqs & DESCRIPTOR_REQ_SAMPLER_IMPLICITLOD_DREF_PROJ) {
+                        }
+
+                        // sampler must not be used with any of the SPIR-V OpImageSample* or OpImageSparseSample* instructions
+                        // with ImplicitLod, Dref or Proj in their name
+                        if (reqs & DESCRIPTOR_REQ_SAMPLER_IMPLICITLOD_DREF_PROJ) {
+                            if (!update_unnormalizedCoordinates_sampler_states) {
+                                update_unnormalizedCoordinates_sampler_states = true;
+                                unnormalizedCoordinates_sampler_states = GetUnnormalizedCoordinatesSamplerStatesFromDescriptorSet(
+                                    descriptor_class, *descriptor, *cb_node, binding_info, index);
+                            }
+
+                            for (const auto *sampler_state : unnormalizedCoordinates_sampler_states) {
                                 auto set = descriptor_set->GetSet();
                                 LogObjectList objlist(set);
                                 objlist.add(image_view);
@@ -1035,9 +1056,18 @@ bool CoreChecks::ValidateDescriptorSetBindingData(const CMD_BUFFER_STATE *cb_nod
                                                 report_data->FormatHandle(image_view).c_str(), binding, index,
                                                 report_data->FormatHandle(sampler_state->sampler).c_str());
                             }
-                            // sampler must not be used with any of the SPIR-V OpImageSample* or OpImageSparseSample* instructions
-                            // that includes a LOD bias or any offset values
-                            if (reqs & DESCRIPTOR_REQ_SAMPLER_BIAS_OFFSET) {
+                        }
+
+                        // sampler must not be used with any of the SPIR-V OpImageSample* or OpImageSparseSample* instructions
+                        // that includes a LOD bias or any offset values
+                        if (reqs & DESCRIPTOR_REQ_SAMPLER_BIAS_OFFSET) {
+                            if (!update_unnormalizedCoordinates_sampler_states) {
+                                update_unnormalizedCoordinates_sampler_states = true;
+                                unnormalizedCoordinates_sampler_states = GetUnnormalizedCoordinatesSamplerStatesFromDescriptorSet(
+                                    descriptor_class, *descriptor, *cb_node, binding_info, index);
+                            }
+
+                            for (const auto *sampler_state : unnormalizedCoordinates_sampler_states) {
                                 auto set = descriptor_set->GetSet();
                                 LogObjectList objlist(set);
                                 objlist.add(image_view);
