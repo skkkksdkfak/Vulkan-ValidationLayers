@@ -1879,6 +1879,7 @@ bool RenderPassAccessContext::ValidateDrawSubpassAttachment(const SyncValidator 
 
         // PHASE1 TODO: These validation should be in core_checks.
         if (!FormatIsStencilOnly(img_view_state->create_info.format) &&
+            (img_view_state->create_info.subresourceRange.aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT) &&
             pPipe->graphicsPipelineCI.pDepthStencilState->depthTestEnable &&
             pPipe->graphicsPipelineCI.pDepthStencilState->depthWriteEnable &&
             IsImageLayoutDepthWritable(subpass.pDepthStencilAttachment->layout)) {
@@ -1889,6 +1890,7 @@ bool RenderPassAccessContext::ValidateDrawSubpassAttachment(const SyncValidator 
         //              If depth test is disable, it's considered depth test passes, and then depthFailOp doesn't run.
         // PHASE1 TODO: These validation should be in core_checks.
         if (!FormatIsDepthOnly(img_view_state->create_info.format) &&
+            (img_view_state->create_info.subresourceRange.aspectMask & VK_IMAGE_ASPECT_STENCIL_BIT) &&
             pPipe->graphicsPipelineCI.pDepthStencilState->stencilTestEnable &&
             IsImageLayoutStencilWritable(subpass.pDepthStencilAttachment->layout)) {
             stencil_write = true;
@@ -1960,6 +1962,7 @@ void RenderPassAccessContext::RecordDrawSubpassAttachment(const CMD_BUFFER_STATE
 
         // PHASE1 TODO: These validation should be in core_checks.
         if (!FormatIsStencilOnly(img_view_state->create_info.format) &&
+            (img_view_state->create_info.subresourceRange.aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT) &&
             pPipe->graphicsPipelineCI.pDepthStencilState->depthTestEnable &&
             pPipe->graphicsPipelineCI.pDepthStencilState->depthWriteEnable &&
             IsImageLayoutDepthWritable(subpass.pDepthStencilAttachment->layout)) {
@@ -1970,6 +1973,7 @@ void RenderPassAccessContext::RecordDrawSubpassAttachment(const CMD_BUFFER_STATE
         //              If depth test is disable, it's considered depth test passes, and then depthFailOp doesn't run.
         // PHASE1 TODO: These validation should be in core_checks.
         if (!FormatIsDepthOnly(img_view_state->create_info.format) &&
+            (img_view_state->create_info.subresourceRange.aspectMask & VK_IMAGE_ASPECT_STENCIL_BIT) &&
             pPipe->graphicsPipelineCI.pDepthStencilState->stencilTestEnable &&
             IsImageLayoutStencilWritable(subpass.pDepthStencilAttachment->layout)) {
             stencil_write = true;
