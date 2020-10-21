@@ -193,7 +193,7 @@ inline bool operator==(const DescriptorReqirement &a, const DescriptorReqirement
 
 inline bool operator<(const DescriptorReqirement &a, const DescriptorReqirement &b) NOEXCEPT { return a.reqs < b.reqs; }
 
-typedef std::map<uint32_t, DescriptorReqirement> BindingReqMap;
+typedef std::unordered_map<uint32_t, DescriptorReqirement> BindingReqMap;
 
 struct DESCRIPTOR_POOL_STATE : BASE_NODE {
     VkDescriptorPool pool;
@@ -1207,6 +1207,40 @@ typedef ImageSubresourceLayoutMap::LayoutMap GlobalImageLayoutRangeMap;
 typedef std::unordered_map<VkImage, std::unique_ptr<GlobalImageLayoutRangeMap>> GlobalImageLayoutMap;
 typedef std::unordered_map<VkImage, std::unique_ptr<ImageSubresourceLayoutMap>> CommandBufferImageLayoutMap;
 
+enum LvlBindPoint {
+    BindPoint_Graphics = 0,
+    BindPoint_Computer = 1,
+    BindPoint_Ray_Tracing = 2,
+};
+
+VkPipelineBindPoint ConvertToPipelineBindPoint(LvlBindPoint bind_point) {
+    switch (bind_point) {
+        case BindPoint_Graphics:
+            return VK_PIPELINE_BIND_POINT_GRAPHICS;
+        case BindPoint_Computer:
+            return VK_PIPELINE_BIND_POINT_COMPUTE;
+        case BindPoint_Ray_Tracing:
+            return VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR;
+        default:
+            return VK_PIPELINE_BIND_POINT_MAX_ENUM;
+    }
+    return VK_PIPELINE_BIND_POINT_MAX_ENUM;
+}
+
+LvlBindPoint ConvertToLvlBindPoint(VkPipelineBindPoint bind_point) {
+    switch (bind_point) {
+        case VK_PIPELINE_BIND_POINT_GRAPHICS:
+            return BindPoint_Graphics;
+        case VK_PIPELINE_BIND_POINT_COMPUTE:
+            return BindPoint_Computer;
+        case VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR:
+            return BindPoint_Ray_Tracing;
+        default:
+            return LvlBindPoint(~0U);
+    }
+    return LvlBindPoint(~0U);
+}
+
 class FRAMEBUFFER_STATE;
 // Cmd Buffer Wrapper Struct - TODO : This desperately needs its own class
 struct CMD_BUFFER_STATE : public BASE_NODE {
@@ -1233,7 +1267,7 @@ struct CMD_BUFFER_STATE : public BASE_NODE {
     //  long-term may want to create caches of "lastBound" states and could have
     //  each individual CMD_NODE referencing its own "lastBound" state
     // Store last bound state for Gfx & Compute pipeline bind points
-    std::map<uint32_t, LAST_BOUND_STATE> lastBound;
+    std::array<LAST_BOUND_STATE, 3> lastBound;  // index is LvlBindPoint.
 
     struct CmdDrawDispatchInfo {
         CMD_TYPE cmd_type;
@@ -1312,12 +1346,6 @@ struct CMD_BUFFER_STATE : public BASE_NODE {
     std::vector<IMAGE_VIEW_STATE *> imagelessFramebufferAttachments;
 
     bool transform_feedback_active{false};
-
-    const cvdescriptorset::Descriptor *GetDescriptor(VkShaderStageFlagBits shader_stage, uint32_t set, uint32_t binding,
-                                                     uint32_t index) const;
-
-    const cvdescriptorset::Descriptor *GetDescriptor(VkPipelineBindPoint bind_point, uint32_t set, uint32_t binding,
-                                                     uint32_t index) const;
 };
 
 static inline const QFOTransferBarrierSets<VkImageMemoryBarrier> &GetQFOBarrierSets(
