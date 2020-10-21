@@ -1195,6 +1195,9 @@ class ValidationStateTracker : public ValidationObject {
     std::vector<const IMAGE_VIEW_STATE*> GetAttachmentViews(const VkRenderPassBeginInfo& rp_begin,
                                                             const FRAMEBUFFER_STATE& fb_state) const;
     std::vector<const IMAGE_VIEW_STATE*> GetCurrentAttachmentViews(const CMD_BUFFER_STATE& cb_state) const;
+    std::vector<const IMAGE_VIEW_STATE*> GetCurrentSubpassAttachmentViews(
+        const FRAMEBUFFER_STATE& fb_state, const safe_VkSubpassDescription2& subpasses,
+        const std::vector<IMAGE_VIEW_STATE*>& imagelessFramebufferAttachments) const;
     BASE_NODE* GetStateStructPtrFromObject(const VulkanTypedHandle& object_struct);
     VkFormatFeatureFlags GetPotentialFormatFeatures(VkFormat format) const;
     void IncrementBoundObjects(CMD_BUFFER_STATE const* cb_node);

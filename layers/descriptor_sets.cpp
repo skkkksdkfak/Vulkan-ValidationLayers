@@ -699,7 +699,7 @@ unsigned DescriptorRequirementsBitsFromFormat(VkFormat fmt) {
 // Return true if state is acceptable, or false and write an error message into error string
 bool CoreChecks::ValidateDrawState(const DescriptorSet *descriptor_set, const std::map<uint32_t, DescriptorReqirement> &bindings,
                                    const std::vector<uint32_t> &dynamic_offsets, const CMD_BUFFER_STATE *cb_node,
-                                   const std::vector<VkImageView> &attachment_views, const char *caller,
+                                   const std::vector<const IMAGE_VIEW_STATE *> &attachment_views, const char *caller,
                                    const DrawDispatchVuid &vuids) const {
     bool result = false;
     VkFramebuffer framebuffer = cb_node->activeFramebuffer ? cb_node->activeFramebuffer->framebuffer : VK_NULL_HANDLE;
@@ -730,7 +730,7 @@ bool CoreChecks::ValidateDrawState(const DescriptorSet *descriptor_set, const st
 bool CoreChecks::ValidateDescriptorSetBindingData(const CMD_BUFFER_STATE *cb_node, const DescriptorSet *descriptor_set,
                                                   const std::vector<uint32_t> &dynamic_offsets,
                                                   std::pair<uint32_t, DescriptorReqirement> binding_info, VkFramebuffer framebuffer,
-                                                  const std::vector<VkImageView> &attachment_views, const char *caller,
+                                                  const std::vector<const IMAGE_VIEW_STATE *> &attachment_views, const char *caller,
                                                   const DrawDispatchVuid &vuids) const {
     using DescriptorClass = cvdescriptorset::DescriptorClass;
     using BufferDescriptor = cvdescriptorset::BufferDescriptor;
@@ -826,6 +826,10 @@ bool CoreChecks::ValidateDescriptorSetBindingData(const CMD_BUFFER_STATE *cb_nod
                                         report_data->FormatHandle(set).c_str(), caller, binding, index,
                                         report_data->FormatHandle(buffer).c_str(), dyn_offset, desc_offset, range, buffer_size);
                                 }
+                            }
+
+                            if (ValidateProtectedCommandBuffer(cb_node, buffer_node, caller, vuids, "DescriptorSet") == true) {
+                                return true;
                             }
                         }
                     }
@@ -962,8 +966,8 @@ bool CoreChecks::ValidateDescriptorSetBindingData(const CMD_BUFFER_STATE *cb_nod
                         // Verify if attachments are used in DescriptorSet
                         if (attachment_views.size() > 0 && (descriptor_type != VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT)) {
                             uint32_t view_index = 0;
-                            for (const auto &view : attachment_views) {
-                                if (view == image_view) {
+                            for (const auto *view : attachment_views) {
+                                if (view->image_view == image_view) {
                                     auto set = descriptor_set->GetSet();
                                     LogObjectList objlist(set);
                                     objlist.add(image_view);
@@ -976,13 +980,12 @@ bool CoreChecks::ValidateDescriptorSetBindingData(const CMD_BUFFER_STATE *cb_nod
                                                     report_data->FormatHandle(image_view).c_str(), binding, index,
                                                     report_data->FormatHandle(framebuffer).c_str(), view_index);
                                 } else if (view != VK_NULL_HANDLE) {
-                                    const auto *view_state = Get<IMAGE_VIEW_STATE>(view);
-                                    if (image_view_state->OverlapSubresource(*view_state)) {
+                                    if (image_view_state->OverlapSubresource(*view)) {
                                         auto set = descriptor_set->GetSet();
                                         LogObjectList objlist(set);
                                         objlist.add(image_view);
                                         objlist.add(framebuffer);
-                                        objlist.add(view);
+                                        objlist.add(view->image_view);
                                         return LogError(
                                             objlist, vuids.image_subresources,
                                             "%s encountered the following validation error at %s time: Image subresources of %s in "
@@ -990,8 +993,8 @@ bool CoreChecks::ValidateDescriptorSetBindingData(const CMD_BUFFER_STATE *cb_nod
                                             " and %s in %s attachment # %" PRIu32 " overlap.",
                                             report_data->FormatHandle(set).c_str(), caller,
                                             report_data->FormatHandle(image_view).c_str(), binding, index,
-                                            report_data->FormatHandle(view).c_str(), report_data->FormatHandle(framebuffer).c_str(),
-                                            view_index);
+                                            report_data->FormatHandle(view->image_view).c_str(),
+                                            report_data->FormatHandle(framebuffer).c_str(), view_index);
                                     }
                                 }
                                 ++view_index;
@@ -1051,6 +1054,10 @@ bool CoreChecks::ValidateDescriptorSetBindingData(const CMD_BUFFER_STATE *cb_nod
                                                 report_data->FormatHandle(sampler_state->sampler).c_str());
                             }
                         }
+
+                        if (ValidateProtectedCommandBuffer(cb_node, image_view_state, caller, vuids, "DescriptorSet") == true) {
+                            return true;
+                        }
                     }
                 } else if (descriptor_class == DescriptorClass::TexelBuffer) {
                     auto texel_buffer = static_cast<const TexelDescriptor *>(descriptor);
@@ -1107,6 +1114,10 @@ bool CoreChecks::ValidateDescriptorSetBindingData(const CMD_BUFFER_STATE *cb_nod
                                 report_data->FormatHandle(set).c_str(), caller, binding, index,
                                 report_data->FormatHandle(buffer_view).c_str(),
                                 string_VkFormat(buffer_view_state->create_info.format));
+                        }
+
+                        if (ValidateProtectedCommandBuffer(cb_node, buffer_view_state, caller, vuids, "DescriptorSet") == true) {
+                            return true;
                         }
                     }
                 } else if (descriptor_class == DescriptorClass::AccelerationStructure) {
@@ -1617,8 +1628,9 @@ void cvdescriptorset::DescriptorSet::UpdateDrawState(ValidationStateTracker *dev
         cmd_info.function = function;
         if (cb_node->activeFramebuffer) {
             cmd_info.framebuffer = cb_node->activeFramebuffer->framebuffer;
-            cmd_info.attachment_views = cb_node->activeFramebuffer->GetUsedAttachments(
-                *cb_node->activeRenderPass->createInfo.pSubpasses, cb_node->imagelessFramebufferAttachments);
+            cmd_info.attachment_views = device_data->GetCurrentSubpassAttachmentViews(
+                *cb_node->activeFramebuffer, cb_node->activeRenderPass->createInfo.pSubpasses[cb_node->activeSubpass],
+                cb_node->imagelessFramebufferAttachments);
         }
         cb_node->validate_descriptorsets_in_queuesubmit[set_].emplace_back(cmd_info);
     }

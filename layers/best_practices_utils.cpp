@@ -1392,11 +1392,10 @@ bool BestPractices::ValidateIndexBufferArm(VkCommandBuffer commandBuffer, uint32
     const auto* cmd_state = GetCBState(commandBuffer);
     if (cmd_state == nullptr) return skip;
 
-    const auto* ib_state = GetBufferState(cmd_state->index_buffer_binding.buffer);
-    if (ib_state == nullptr) return skip;
+    if (cmd_state->index_buffer_binding.buffer_state == nullptr) return skip;
 
     const VkIndexType ib_type = cmd_state->index_buffer_binding.index_type;
-    const auto& ib_mem_state = *ib_state->binding.mem_state;
+    const auto& ib_mem_state = *cmd_state->index_buffer_binding.buffer_state->binding.mem_state;
     const VkDeviceSize ib_mem_offset = ib_mem_state.mapped_range.offset;
     const void* ib_mem = ib_mem_state.p_driver_data;
     bool primitive_restart_enable = false;

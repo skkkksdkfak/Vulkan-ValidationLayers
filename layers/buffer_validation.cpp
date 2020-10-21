@@ -69,54 +69,9 @@ static VkImageSubresourceRange MakeImageFullRange(const VkImageCreateInfo &creat
     return NormalizeSubresourceRange(create_info, init_range);
 }
 
-std::vector<VkImageView> FRAMEBUFFER_STATE::GetUsedAttachments(
-    const safe_VkSubpassDescription2 &subpasses, const std::vector<IMAGE_VIEW_STATE *> &imagelessFramebufferAttachments) {
-    std::vector<VkImageView> attachment_views(createInfo.attachmentCount, VK_NULL_HANDLE);
+bool BUFFER_STATE::Protected() const { return (createInfo.flags & VK_BUFFER_CREATE_PROTECTED_BIT) ? true : false; }
 
-    const bool imageless = (createInfo.flags & VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT) ? true : false;
-
-    for (uint32_t index = 0; index < subpasses.inputAttachmentCount; ++index) {
-        const uint32_t attachment_index = subpasses.pInputAttachments[index].attachment;
-        if (attachment_index != VK_ATTACHMENT_UNUSED) {
-            if (imageless) {
-                attachment_views[attachment_index] = imagelessFramebufferAttachments[attachment_index]->image_view;
-            } else {
-                attachment_views[attachment_index] = createInfo.pAttachments[attachment_index];
-            }
-        }
-    }
-    for (uint32_t index = 0; index < subpasses.colorAttachmentCount; ++index) {
-        const uint32_t attachment_index = subpasses.pColorAttachments[index].attachment;
-        if (attachment_index != VK_ATTACHMENT_UNUSED) {
-            if (imageless) {
-                attachment_views[attachment_index] = imagelessFramebufferAttachments[attachment_index]->image_view;
-            } else {
-                attachment_views[attachment_index] = createInfo.pAttachments[attachment_index];
-            }
-        }
-        if (subpasses.pResolveAttachments) {
-            const uint32_t attachment_index2 = subpasses.pResolveAttachments[index].attachment;
-            if (attachment_index2 != VK_ATTACHMENT_UNUSED) {
-                if (imageless) {
-                    attachment_views[attachment_index2] = imagelessFramebufferAttachments[attachment_index2]->image_view;
-                } else {
-                    attachment_views[attachment_index2] = createInfo.pAttachments[attachment_index2];
-                }
-            }
-        }
-    }
-    if (subpasses.pDepthStencilAttachment) {
-        const uint32_t attachment_index = subpasses.pDepthStencilAttachment->attachment;
-        if (attachment_index != VK_ATTACHMENT_UNUSED) {
-            if (imageless) {
-                attachment_views[attachment_index] = imagelessFramebufferAttachments[attachment_index]->image_view;
-            } else {
-                attachment_views[attachment_index] = createInfo.pAttachments[attachment_index];
-            }
-        }
-    }
-    return attachment_views;
-}
+bool BUFFER_VIEW_STATE::Protected() const { return buffer_state ? buffer_state->Protected() : false; }
 
 IMAGE_STATE::IMAGE_STATE(VkDevice dev, VkImage img, const VkImageCreateInfo *pCreateInfo)
     : image(img),
@@ -134,6 +89,7 @@ IMAGE_STATE::IMAGE_STATE(VkDevice dev, VkImage img, const VkImageCreateInfo *pCr
       ahb_format(0),
       full_range{MakeImageFullRange(createInfo)},
       create_from_swapchain(VK_NULL_HANDLE),
+      create_from_swapchain_protected(false),
       bind_swapchain(VK_NULL_HANDLE),
       bind_swapchain_imageIndex(0),
       range_encoder(full_range),
@@ -207,6 +163,11 @@ bool IMAGE_STATE::IsCompatibleAliasing(IMAGE_STATE *other_image_state) {
     return false;
 }
 
+bool IMAGE_STATE::Protected() const {
+    if (create_from_swapchain) return create_from_swapchain_protected;
+    return (createInfo.flags & VK_IMAGE_CREATE_PROTECTED_BIT) ? true : false;
+}
+
 IMAGE_VIEW_STATE::IMAGE_VIEW_STATE(const std::shared_ptr<IMAGE_STATE> &im, VkImageView iv, const VkImageViewCreateInfo *ci)
     : image_view(iv),
       create_info(*ci),
@@ -276,6 +237,10 @@ bool IMAGE_VIEW_STATE::OverlapSubresource(const IMAGE_VIEW_STATE &compare_view) 
     return true;
 }
 
+bool IMAGE_VIEW_STATE::Protected() const { return image_state ? image_state->Protected() : false; }
+
+bool SWAPCHAIN_NODE::Protected() const { return (createInfo.flags & VK_SWAPCHAIN_CREATE_PROTECTED_BIT_KHR) ? true : false; }
+
 const cvdescriptorset::Descriptor *CMD_BUFFER_STATE::GetDescriptor(VkShaderStageFlagBits shader_stage, uint32_t set,
                                                                    uint32_t binding, uint32_t index) const {
     VkPipelineBindPoint bind_point;
@@ -301,6 +266,10 @@ const cvdescriptorset::Descriptor *CMD_BUFFER_STATE::GetDescriptor(VkPipelineBin
         return nullptr;
     }
     return last_bound_it->second.per_set[set].bound_descriptor_set->GetDescriptorFromBinding(binding, index);
+}
+
+bool CMD_BUFFER_STATE::Protected() const {
+    return (command_pool->createFlags & VK_COMMAND_POOL_CREATE_PROTECTED_BIT) ? true : false;
 }
 
 uint32_t FullMipChainLevels(uint32_t height, uint32_t width, uint32_t depth) {

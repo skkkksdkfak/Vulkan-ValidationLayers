@@ -60,6 +60,9 @@ struct DrawDispatchVuid {
     const char* sampler_imageview_type;
     const char* sampler_implicitLod_dref_proj;
     const char* sampler_bias_offset;
+    const char* unprotected_command_buffer;
+    const char* protected_command_buffer;
+    const char* protected_command_buffer_stages;
 };
 
 typedef struct {
@@ -357,6 +360,14 @@ class CoreChecks : public ValidationStateTracker {
     bool ValidatePrimaryCommandBufferState(const CMD_BUFFER_STATE* pCB, int current_submit_count,
                                            QFOTransferCBScoreboards<VkImageMemoryBarrier>* qfo_image_scoreboards,
                                            QFOTransferCBScoreboards<VkBufferMemoryBarrier>* qfo_buffer_scoreboards) const;
+
+    bool ValidateProtectedCommandBuffer(const CMD_BUFFER_STATE* cmd_node, const BUFFER_STATE* buf_state, const char* caller,
+                                        const DrawDispatchVuid& vuid, std::string buf_type) const;
+    bool ValidateProtectedCommandBuffer(const CMD_BUFFER_STATE* cmd_node, const BUFFER_VIEW_STATE* buf_view_state,
+                                        const char* caller, const DrawDispatchVuid& vuid, std::string buf_view_type) const;
+    bool ValidateProtectedCommandBuffer(const CMD_BUFFER_STATE* cmd_node, const IMAGE_VIEW_STATE* img_view_state,
+                                        const char* caller, const DrawDispatchVuid& vuid, std::string img_view_type) const;
+
     bool ValidatePipelineDrawtimeState(const LAST_BOUND_STATE& state, const CMD_BUFFER_STATE* pCB, CMD_TYPE cmd_type,
                                        const PIPELINE_STATE* pPipeline, const char* caller) const;
     bool ValidateCmdBufDrawState(const CMD_BUFFER_STATE* cb_node, CMD_TYPE cmd_type, const bool indexed,
@@ -378,12 +389,12 @@ class CoreChecks : public ValidationStateTracker {
     // For given bindings validate state at time of draw is correct, returning false on error and writing error details into string*
     bool ValidateDrawState(const cvdescriptorset::DescriptorSet* descriptor_set,
                            const std::map<uint32_t, DescriptorReqirement>& bindings, const std::vector<uint32_t>& dynamic_offsets,
-                           const CMD_BUFFER_STATE* cb_node, const std::vector<VkImageView>& attachment_views, const char* caller,
-                           const DrawDispatchVuid& vuids) const;
+                           const CMD_BUFFER_STATE* cb_node, const std::vector<const IMAGE_VIEW_STATE*>& attachment_views,
+                           const char* caller, const DrawDispatchVuid& vuids) const;
     bool ValidateDescriptorSetBindingData(const CMD_BUFFER_STATE* cb_node, const cvdescriptorset::DescriptorSet* descriptor_set,
                                           const std::vector<uint32_t>& dynamic_offsets,
                                           std::pair<uint32_t, DescriptorReqirement> binding_info, VkFramebuffer framebuffer,
-                                          const std::vector<VkImageView>& attachment_views, const char* caller,
+                                          const std::vector<const IMAGE_VIEW_STATE*>& attachment_views, const char* caller,
                                           const DrawDispatchVuid& vuids) const;
 
     // Validate contents of a CopyUpdate

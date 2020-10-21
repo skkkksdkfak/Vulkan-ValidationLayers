@@ -278,8 +278,9 @@ struct MEM_BINDING {
     VkDeviceSize size;
 };
 
+class BUFFER_STATE;
 struct BufferBinding {
-    VkBuffer buffer;
+    std::shared_ptr<BUFFER_STATE> buffer_state;
     VkDeviceSize size;
     VkDeviceSize offset;
     VkDeviceSize stride;
@@ -386,6 +387,8 @@ class BUFFER_STATE : public BINDABLE {
             createInfo.pQueueFamilyIndices = nullptr;
         }
     };
+
+    bool Protected() const;
 };
 
 class BUFFER_VIEW_STATE : public BASE_NODE {
@@ -397,6 +400,8 @@ class BUFFER_VIEW_STATE : public BASE_NODE {
     BUFFER_VIEW_STATE(const std::shared_ptr<BUFFER_STATE> &bf, VkBufferView bv, const VkBufferViewCreateInfo *ci)
         : buffer_view(bv), create_info(*ci), buffer_state(bf){};
     BUFFER_VIEW_STATE(const BUFFER_VIEW_STATE &rh_obj) = delete;
+
+    bool Protected() const;
 };
 
 struct SAMPLER_STATE : public BASE_NODE {
@@ -430,6 +435,7 @@ class IMAGE_STATE : public BINDABLE {
     uint64_t ahb_format;                 // External Android format, if provided
     VkImageSubresourceRange full_range;  // The normalized ISR for all levels, layers (slices), and aspects
     VkSwapchainKHR create_from_swapchain;
+    bool create_from_swapchain_protected;
     VkSwapchainKHR bind_swapchain;
     uint32_t bind_swapchain_imageIndex;
     image_layout_map::Encoder range_encoder;
@@ -500,6 +506,8 @@ class IMAGE_STATE : public BINDABLE {
             createInfo.pQueueFamilyIndices = nullptr;
         }
     };
+
+    bool Protected() const;
 };
 
 class IMAGE_VIEW_STATE : public BASE_NODE {
@@ -517,6 +525,7 @@ class IMAGE_VIEW_STATE : public BASE_NODE {
     IMAGE_VIEW_STATE(const IMAGE_VIEW_STATE &rh_obj) = delete;
 
     bool OverlapSubresource(const IMAGE_VIEW_STATE &compare_view) const;
+    bool Protected() const;
 };
 
 class ACCELERATION_STRUCTURE_STATE : public BINDABLE {
@@ -572,6 +581,8 @@ class SWAPCHAIN_NODE : public BASE_NODE {
     uint32_t get_swapchain_image_count = 0;
     SWAPCHAIN_NODE(const VkSwapchainCreateInfoKHR *pCreateInfo, VkSwapchainKHR swapchain)
         : createInfo(pCreateInfo), swapchain(swapchain) {}
+
+    bool Protected() const;
 };
 
 extern bool ImageLayoutMatches(const VkImageAspectFlags aspect_mask, VkImageLayout a, VkImageLayout b);
@@ -1229,8 +1240,9 @@ struct CMD_BUFFER_STATE : public BASE_NODE {
         std::string function;
         std::vector<std::pair<uint32_t, DescriptorReqirement>> binding_infos;
         VkFramebuffer framebuffer;
-        std::vector<VkImageView> attachment_views;  // vector index is attachment index. If the value is VK_NULL_HANDLE(0),
-                                                    // it means the attachment isn't used in this command.
+        std::vector<const IMAGE_VIEW_STATE *>
+            attachment_views;  // vector index is attachment index. If the value is VK_NULL_HANDLE(0),
+                               // it means the attachment isn't used in this command.
     };
     std::unordered_map<VkDescriptorSet, std::vector<CmdDrawDispatchInfo>> validate_descriptorsets_in_queuesubmit;
 
@@ -1307,6 +1319,8 @@ struct CMD_BUFFER_STATE : public BASE_NODE {
 
     const cvdescriptorset::Descriptor *GetDescriptor(VkPipelineBindPoint bind_point, uint32_t set, uint32_t binding,
                                                      uint32_t index) const;
+
+    bool Protected() const;
 };
 
 static inline const QFOTransferBarrierSets<VkImageMemoryBarrier> &GetQFOBarrierSets(
@@ -1370,10 +1384,6 @@ class FRAMEBUFFER_STATE : public BASE_NODE {
     std::shared_ptr<const RENDER_PASS_STATE> rp_state;
     FRAMEBUFFER_STATE(VkFramebuffer fb, const VkFramebufferCreateInfo *pCreateInfo, std::shared_ptr<RENDER_PASS_STATE> &&rpstate)
         : framebuffer(fb), createInfo(pCreateInfo), rp_state(rpstate){};
-
-    // vector index is attachment index. If the value is VK_NULL_HANDLE(0), it means the attachment isn't used in this command.
-    std::vector<VkImageView> GetUsedAttachments(const safe_VkSubpassDescription2 &subpasses,
-                                                const std::vector<IMAGE_VIEW_STATE *> &imagelessFramebufferAttachments);
 };
 
 struct SHADER_MODULE_STATE;

@@ -142,6 +142,57 @@ std::vector<const IMAGE_VIEW_STATE *> ValidationStateTracker::GetCurrentAttachme
     return GetAttachmentViews(rp_begin, *fb_state);
 }
 
+std::vector<const IMAGE_VIEW_STATE *> ValidationStateTracker::GetCurrentSubpassAttachmentViews(
+    const FRAMEBUFFER_STATE &fb_state, const safe_VkSubpassDescription2 &subpasses,
+    const std::vector<IMAGE_VIEW_STATE *> &imagelessFramebufferAttachments) const {
+    std::vector<const IMAGE_VIEW_STATE *> attachment_views(fb_state.createInfo.attachmentCount, nullptr);
+
+    const bool imageless = (fb_state.createInfo.flags & VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT) ? true : false;
+    const auto *pAttachments = fb_state.createInfo.pAttachments;
+
+    for (uint32_t index = 0; index < subpasses.inputAttachmentCount; ++index) {
+        const uint32_t attachment_index = subpasses.pInputAttachments[index].attachment;
+        if (attachment_index != VK_ATTACHMENT_UNUSED) {
+            if (imageless) {
+                attachment_views[attachment_index] = imagelessFramebufferAttachments[attachment_index];
+            } else {
+                attachment_views[attachment_index] = Get<IMAGE_VIEW_STATE>(pAttachments[attachment_index]);
+            }
+        }
+    }
+    for (uint32_t index = 0; index < subpasses.colorAttachmentCount; ++index) {
+        const uint32_t attachment_index = subpasses.pColorAttachments[index].attachment;
+        if (attachment_index != VK_ATTACHMENT_UNUSED) {
+            if (imageless) {
+                attachment_views[attachment_index] = imagelessFramebufferAttachments[attachment_index];
+            } else {
+                attachment_views[attachment_index] = Get<IMAGE_VIEW_STATE>(pAttachments[attachment_index]);
+            }
+        }
+        if (subpasses.pResolveAttachments) {
+            const uint32_t attachment_index2 = subpasses.pResolveAttachments[index].attachment;
+            if (attachment_index2 != VK_ATTACHMENT_UNUSED) {
+                if (imageless) {
+                    attachment_views[attachment_index2] = imagelessFramebufferAttachments[attachment_index2];
+                } else {
+                    attachment_views[attachment_index2] = Get<IMAGE_VIEW_STATE>(pAttachments[attachment_index2]);
+                }
+            }
+        }
+    }
+    if (subpasses.pDepthStencilAttachment) {
+        const uint32_t attachment_index = subpasses.pDepthStencilAttachment->attachment;
+        if (attachment_index != VK_ATTACHMENT_UNUSED) {
+            if (imageless) {
+                attachment_views[attachment_index] = imagelessFramebufferAttachments[attachment_index];
+            } else {
+                attachment_views[attachment_index] = Get<IMAGE_VIEW_STATE>(pAttachments[attachment_index]);
+            }
+        }
+    }
+    return attachment_views;
+}
+
 PIPELINE_STATE *GetCurrentPipelineFromCommandBuffer(const CMD_BUFFER_STATE &cmd, VkPipelineBindPoint pipelineBindPoint) {
     const auto last_bound_it = cmd.lastBound.find(pipelineBindPoint);
     if (last_bound_it == cmd.lastBound.cend()) {
@@ -288,6 +339,8 @@ void ValidationStateTracker::PostCallRecordCreateImage(VkDevice device, const Vk
     const auto swapchain_info = lvl_find_in_chain<VkImageSwapchainCreateInfoKHR>(pCreateInfo->pNext);
     if (swapchain_info) {
         is_node->create_from_swapchain = swapchain_info->swapchain;
+        const auto *swapchain_state = Get<SWAPCHAIN_NODE>(swapchain_info->swapchain);
+        is_node->create_from_swapchain_protected = swapchain_state->Protected();
     }
 
     // Record the memory requirements in case they won't be queried
@@ -3974,17 +4027,16 @@ void ValidationStateTracker::PostCallRecordCmdPushConstants(VkCommandBuffer comm
 
 void ValidationStateTracker::PreCallRecordCmdBindIndexBuffer(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset,
                                                              VkIndexType indexType) {
-    auto buffer_state = GetBufferState(buffer);
     auto cb_state = GetCBState(commandBuffer);
 
     cb_state->status |= CBSTATUS_INDEX_BUFFER_BOUND;
     cb_state->static_status &= ~CBSTATUS_INDEX_BUFFER_BOUND;
-    cb_state->index_buffer_binding.buffer = buffer;
-    cb_state->index_buffer_binding.size = buffer_state->createInfo.size;
+    cb_state->index_buffer_binding.buffer_state = GetShared<BUFFER_STATE>(buffer);
+    cb_state->index_buffer_binding.size = cb_state->index_buffer_binding.buffer_state->createInfo.size;
     cb_state->index_buffer_binding.offset = offset;
     cb_state->index_buffer_binding.index_type = indexType;
     // Add binding for this index buffer to this commandbuffer
-    AddCommandBufferBindingBuffer(cb_state, buffer_state);
+    AddCommandBufferBindingBuffer(cb_state, cb_state->index_buffer_binding.buffer_state.get());
 }
 
 void ValidationStateTracker::PreCallRecordCmdBindVertexBuffers(VkCommandBuffer commandBuffer, uint32_t firstBinding,
@@ -3999,7 +4051,7 @@ void ValidationStateTracker::PreCallRecordCmdBindVertexBuffers(VkCommandBuffer c
 
     for (uint32_t i = 0; i < bindingCount; ++i) {
         auto &vertex_buffer_binding = cb_state->current_vertex_buffer_binding_info.vertex_buffer_bindings[i + firstBinding];
-        vertex_buffer_binding.buffer = pBuffers[i];
+        vertex_buffer_binding.buffer_state = GetShared<BUFFER_STATE>(pBuffers[i]);
         vertex_buffer_binding.offset = pOffsets[i];
         vertex_buffer_binding.size = VK_WHOLE_SIZE;
         vertex_buffer_binding.stride = 0;
@@ -5886,6 +5938,7 @@ void ValidationStateTracker::PostCallRecordGetSwapchainImagesKHR(VkDevice device
             auto &image_state = imageMap[pSwapchainImages[i]];
             image_state->valid = false;
             image_state->create_from_swapchain = swapchain;
+            image_state->create_from_swapchain_protected = swapchain_state->Protected();
             image_state->bind_swapchain = swapchain;
             image_state->bind_swapchain_imageIndex = i;
             image_state->is_swapchain_image = true;
@@ -5991,13 +6044,13 @@ void ValidationStateTracker::PreCallRecordCmdBindVertexBuffers2EXT(VkCommandBuff
 
     for (uint32_t i = 0; i < bindingCount; ++i) {
         auto &vertex_buffer_binding = cb_state->current_vertex_buffer_binding_info.vertex_buffer_bindings[i + firstBinding];
-        vertex_buffer_binding.buffer = pBuffers[i];
+        vertex_buffer_binding.buffer_state = GetShared<BUFFER_STATE>(pBuffers[i]);
         vertex_buffer_binding.offset = pOffsets[i];
         vertex_buffer_binding.size = (pSizes) ? pSizes[i] : VK_WHOLE_SIZE;
         vertex_buffer_binding.stride = (pStrides) ? pStrides[i] : 0;
         // Add binding for this vertex buffer to this commandbuffer
-        if (pBuffers[i]) {
-            AddCommandBufferBindingBuffer(cb_state, GetBufferState(pBuffers[i]));
+        if (vertex_buffer_binding.buffer_state) {
+            AddCommandBufferBindingBuffer(cb_state, vertex_buffer_binding.buffer_state.get());
         }
     }
 }

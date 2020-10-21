@@ -703,12 +703,100 @@ static void ListBits(std::ostream &s, uint32_t bits) {
     }
 }
 
+bool CoreChecks::ValidateProtectedCommandBuffer(const CMD_BUFFER_STATE *cmd_node, const BUFFER_STATE *buf_state, const char *caller,
+                                                const DrawDispatchVuid &vuid, std::string buf_type) const {
+    bool skip = false;
+    if (buf_state && (buf_state->Protected() != cmd_node->Protected())) {
+        if (cmd_node->Protected()) {
+            LogObjectList objlist(cmd_node->commandBuffer);
+            objlist.add(buf_state->buffer);
+            skip |= LogError(objlist, vuid.protected_command_buffer, "%s: %s is Protected, but %s %s is Unprotected.", caller,
+                             report_data->FormatHandle(cmd_node->commandBuffer).c_str(), buf_type.c_str(),
+                             report_data->FormatHandle(buf_state->buffer).c_str());
+        } else {
+            LogObjectList objlist(cmd_node->commandBuffer);
+            objlist.add(buf_state->buffer);
+            skip |= LogError(objlist, vuid.unprotected_command_buffer, "%s: %s is Unprotected, but %s %s is Protected.", caller,
+                             report_data->FormatHandle(cmd_node->commandBuffer).c_str(), buf_type.c_str(),
+                             report_data->FormatHandle(buf_state->buffer).c_str());
+        }
+    }
+    return skip;
+}
+
+bool CoreChecks::ValidateProtectedCommandBuffer(const CMD_BUFFER_STATE *cmd_node, const BUFFER_VIEW_STATE *buf_view_state,
+                                                const char *caller, const DrawDispatchVuid &vuid, std::string buf_view_type) const {
+    bool skip = false;
+    if (buf_view_state && (buf_view_state->Protected() != cmd_node->Protected())) {
+        if (cmd_node->Protected()) {
+            LogObjectList objlist(cmd_node->commandBuffer);
+            objlist.add(buf_view_state->buffer_view);
+            skip |= LogError(objlist, vuid.protected_command_buffer, "%s: %s is Protected, but %s %s is Unprotected.", caller,
+                             report_data->FormatHandle(cmd_node->commandBuffer).c_str(), buf_view_type.c_str(),
+                             report_data->FormatHandle(buf_view_state->buffer_view).c_str());
+        } else {
+            LogObjectList objlist(cmd_node->commandBuffer);
+            objlist.add(buf_view_state->buffer_view);
+            skip |= LogError(objlist, vuid.unprotected_command_buffer, "%s: %s is Unprotected, but %s %s is Protected.", caller,
+                             report_data->FormatHandle(cmd_node->commandBuffer).c_str(), buf_view_type.c_str(),
+                             report_data->FormatHandle(buf_view_state->buffer_view).c_str());
+        }
+    }
+    return skip;
+}
+
+bool CoreChecks::ValidateProtectedCommandBuffer(const CMD_BUFFER_STATE *cmd_node, const IMAGE_VIEW_STATE *img_view_state,
+                                                const char *caller, const DrawDispatchVuid &vuid, std::string img_view_type) const {
+    bool skip = false;
+    if (img_view_state && (img_view_state->Protected() != cmd_node->Protected())) {
+        if (cmd_node->Protected()) {
+            LogObjectList objlist(cmd_node->commandBuffer);
+            objlist.add(img_view_state->image_view);
+            skip |= LogError(objlist, vuid.protected_command_buffer, "%s: %s is Protected, but %s %s is Unprotected.", caller,
+                             report_data->FormatHandle(cmd_node->commandBuffer).c_str(), img_view_type.c_str(),
+                             report_data->FormatHandle(img_view_state->image_view).c_str());
+        } else {
+            LogObjectList objlist(cmd_node->commandBuffer);
+            objlist.add(img_view_state->image_view);
+            skip |= LogError(objlist, vuid.unprotected_command_buffer, "%s: %s is Unprotected, but %s %s is Protected.", caller,
+                             report_data->FormatHandle(cmd_node->commandBuffer).c_str(), img_view_type.c_str(),
+                             report_data->FormatHandle(img_view_state->image_view).c_str());
+        }
+    }
+    return skip;
+}
+
 // Validate draw-time state related to the PSO
 bool CoreChecks::ValidatePipelineDrawtimeState(const LAST_BOUND_STATE &state, const CMD_BUFFER_STATE *pCB, CMD_TYPE cmd_type,
                                                const PIPELINE_STATE *pPipeline, const char *caller) const {
     bool skip = false;
     const auto &current_vtx_bfr_binding_info = pCB->current_vertex_buffer_binding_info.vertex_buffer_bindings;
     const DrawDispatchVuid vuid = GetDrawDispatchVuid(cmd_type);
+
+    for (const auto &binding : current_vtx_bfr_binding_info) {
+        skip |= ValidateProtectedCommandBuffer(pCB, binding.buffer_state.get(), caller, vuid, "bind vertex buffer");
+    }
+
+    skip |= ValidateProtectedCommandBuffer(pCB, pCB->index_buffer_binding.buffer_state.get(), caller, vuid, "bind index buffer");
+
+    if (pCB->Protected()) {
+        for (const auto &stage : pPipeline->stage_state) {
+            if (stage.has_writable_descriptor) {
+                for (const auto &descriptor : stage.descriptor_uses) {
+                    if (descriptor.second.is_writable) {
+                        LogObjectList objlist(pCB->commandBuffer);
+                        objlist.add(pPipeline->pipeline);
+                        skip |= LogError(objlist, vuid.protected_command_buffer,
+                                         "%s: %s is Protected, but Descriptor set #%" PRIu32 " binding #%" PRIu32
+                                         " in %s %s is writable.",
+                                         caller, report_data->FormatHandle(pCB->commandBuffer).c_str(), descriptor.first.first,
+                                         descriptor.first.second, report_data->FormatHandle(pPipeline->pipeline).c_str(),
+                                         string_VkShaderStageFlagBits(stage.stage_flag));
+                    }
+                }
+            }
+        }
+    }
 
     // Verify vertex binding
     if (pPipeline->vertex_binding_descriptions_.size() > 0) {
@@ -721,7 +809,7 @@ bool CoreChecks::ValidatePipelineDrawtimeState(const LAST_BOUND_STATE &state, co
                                  "index " PRINTF_SIZE_T_SPECIFIER " of pVertexBindingDescriptions has a binding value of %u.",
                                  caller, report_data->FormatHandle(state.pipeline_state->pipeline).c_str(), vertex_binding, i,
                                  vertex_binding);
-            } else if ((current_vtx_bfr_binding_info[vertex_binding].buffer == VK_NULL_HANDLE) &&
+            } else if ((!current_vtx_bfr_binding_info[vertex_binding].buffer_state) &&
                        !enabled_features.robustness2_features.nullDescriptor) {
                 skip |= LogError(pCB->commandBuffer, vuid.vertex_binding_null,
                                  "%s: Vertex binding %d must not be VK_NULL_HANDLE %s expects that this Command Buffer's vertex "
@@ -742,7 +830,7 @@ bool CoreChecks::ValidatePipelineDrawtimeState(const LAST_BOUND_STATE &state, co
             const auto &vertex_binding_map_it = pPipeline->vertex_binding_to_index_map_.find(vertex_binding);
             if ((vertex_binding_map_it != pPipeline->vertex_binding_to_index_map_.cend()) &&
                 (vertex_binding < current_vtx_bfr_binding_info.size()) &&
-                (current_vtx_bfr_binding_info[vertex_binding].buffer != VK_NULL_HANDLE)) {
+                (current_vtx_bfr_binding_info[vertex_binding].buffer_state)) {
                 auto vertex_buffer_stride = pPipeline->vertex_binding_descriptions_[vertex_binding_map_it->second].stride;
                 if (IsDynamic(pPipeline, VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE_EXT)) {
                     vertex_buffer_stride = (uint32_t)current_vtx_bfr_binding_info[vertex_binding].stride;
@@ -764,13 +852,14 @@ bool CoreChecks::ValidatePipelineDrawtimeState(const LAST_BOUND_STATE &state, co
                 VkDeviceSize vtx_attrib_req_alignment = pPipeline->vertex_attribute_alignments_[i];
 
                 if (SafeModulo(attrib_address, vtx_attrib_req_alignment) != 0) {
-                    LogObjectList objlist(current_vtx_bfr_binding_info[vertex_binding].buffer);
+                    LogObjectList objlist(current_vtx_bfr_binding_info[vertex_binding].buffer_state->buffer);
                     objlist.add(state.pipeline_state->pipeline);
-                    skip |= LogError(objlist, kVUID_Core_DrawState_InvalidVtxAttributeAlignment,
-                                     "%s: Invalid attribAddress alignment for vertex attribute " PRINTF_SIZE_T_SPECIFIER
-                                     " from %s and vertex %s.",
-                                     caller, i, report_data->FormatHandle(state.pipeline_state->pipeline).c_str(),
-                                     report_data->FormatHandle(current_vtx_bfr_binding_info[vertex_binding].buffer).c_str());
+                    skip |= LogError(
+                        objlist, kVUID_Core_DrawState_InvalidVtxAttributeAlignment,
+                        "%s: Invalid attribAddress alignment for vertex attribute " PRINTF_SIZE_T_SPECIFIER
+                        " from %s and vertex %s.",
+                        caller, i, report_data->FormatHandle(state.pipeline_state->pipeline).c_str(),
+                        report_data->FormatHandle(current_vtx_bfr_binding_info[vertex_binding].buffer_state->buffer).c_str());
                 }
             }
         }
@@ -1036,7 +1125,7 @@ bool CoreChecks::ValidateCmdBufDrawState(const CMD_BUFFER_STATE *cb_node, CMD_TY
 
     bool result = false;
     auto const &state = last_bound_it->second;
-    std::vector<VkImageView> attachment_views;
+    std::vector<const IMAGE_VIEW_STATE *> attachment_views;
 
     if (VK_PIPELINE_BIND_POINT_GRAPHICS == bind_point) {
         // First check flag states
@@ -1044,7 +1133,12 @@ bool CoreChecks::ValidateCmdBufDrawState(const CMD_BUFFER_STATE *cb_node, CMD_TY
 
         if (cb_node->activeRenderPass && cb_node->activeFramebuffer) {
             const auto &subpass = cb_node->activeRenderPass->createInfo.pSubpasses[cb_node->activeSubpass];
-            attachment_views = cb_node->activeFramebuffer->GetUsedAttachments(subpass, cb_node->imagelessFramebufferAttachments);
+            attachment_views =
+                GetCurrentSubpassAttachmentViews(*cb_node->activeFramebuffer, subpass, cb_node->imagelessFramebufferAttachments);
+
+            for (const auto *view : attachment_views) {
+                result |= ValidateProtectedCommandBuffer(cb_node, view, function, vuid, "framebuffer's attachment");
+            }
         }
     }
     // Now complete other state checks
