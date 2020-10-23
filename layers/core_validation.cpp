@@ -1159,6 +1159,8 @@ bool CoreChecks::ValidateCmdBufDrawState(const CMD_BUFFER_STATE *cb_node, CMD_TY
                     break;
                 }
 
+                // TODO: We could check if the all record is 0, if it's not all 0, then check which one is "2: not update"
+                //       Because check if all 0 could be fast, it could help performance.
                 uint32_t issue_index = 0;
                 int ret = ValidatePushConstantSetUpdate(it->second, entrypoint->push_constant_used_in_shader, issue_index);
 
