@@ -65,7 +65,7 @@ struct DrawDispatchVuid {
     const char* unprotected_command_buffer;
     const char* protected_command_buffer;
     const char* protected_command_buffer_pipeline_stages;
-    const char* maxMultiviewInstanceIndex;
+    const char* maxMultiviewInstanceIndex; // TODO: Some instance values are in VkBuffer.The validation in those Cmds is skipped.
     const char* filterCubic;
     const char* filterCubicMinmax;
 };
@@ -256,6 +256,8 @@ class CoreChecks : public ValidationStateTracker {
                                uint32_t queryCount) const;
 
     const DrawDispatchVuid& GetDrawDispatchVuid(CMD_TYPE cmd_type) const;
+    bool ValidateCmdDrawInstance(VkCommandBuffer commandBuffer, uint32_t instanceCount, uint32_t firstInstance, CMD_TYPE cmd_type,
+                                 const char* caller) const;
     bool ValidateCmdDrawType(VkCommandBuffer cmd_buffer, bool indexed, VkPipelineBindPoint bind_point, CMD_TYPE cmd_type,
                              const char* caller, VkQueueFlags queue_flags) const;
     bool ValidateCmdNextSubpass(RenderPassCreateVersion rp_version, VkCommandBuffer commandBuffer) const;
