@@ -62,6 +62,12 @@ struct DrawDispatchVuid {
     const char* sampler_bias_offset;
     const char* vertex_binding_attribute;
     const char* dynamic_state_setting_commands;
+    const char* unprotected_command_buffer;
+    const char* protected_command_buffer;
+    const char* protected_command_buffer_pipeline_stages;
+    const char* maxMultiviewInstanceIndex;
+    const char* filterCubic;
+    const char* filterCubicMinmax;
 };
 
 typedef struct {

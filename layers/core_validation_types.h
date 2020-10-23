@@ -182,10 +182,11 @@ struct less<SamplerUsedByImage> {
 
 struct DescriptorReqirement {
     descriptor_req reqs;
+    bool is_writable;
     std::vector<std::map<SamplerUsedByImage, std::map<VkDescriptorSet, const cvdescriptorset::Descriptor *>>>
         samplers_used_by_image;  // Copy from StageState.interface_var. BUT it combines from plural shader stages.
                                  // The index of array is index of image.
-    DescriptorReqirement() : reqs(descriptor_req(0)) {}
+    DescriptorReqirement() : reqs(descriptor_req(0)), is_writable(false) {}
 };
 
 inline bool operator==(const DescriptorReqirement &a, const DescriptorReqirement &b) NOEXCEPT { return a.reqs == b.reqs; }

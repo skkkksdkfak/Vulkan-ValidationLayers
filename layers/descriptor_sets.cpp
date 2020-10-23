@@ -874,6 +874,13 @@ bool CoreChecks::ValidateDescriptorSetBindingData(VkPipelineBindPoint bind_point
                                 }
                             }
                         }
+                        if (ValidateUnprotectedBuffer(cb_node, buffer_node, caller, vuids.unprotected_command_buffer)) {
+                            return true;
+                        }
+                        if (binding_info.second.is_writable &&
+                            ValidateProtectedBuffer(cb_node, buffer_node, caller, vuids.protected_command_buffer)) {
+                            return true;
+                        }
                     }
                 } else if (descriptor_class == DescriptorClass::ImageSampler || descriptor_class == DescriptorClass::Image) {
                     VkImageView image_view;
@@ -1026,6 +1033,15 @@ bool CoreChecks::ValidateDescriptorSetBindingData(VkPipelineBindPoint bind_point
                                 }
                                 ++view_index;
                             }
+                            if (ValidateUnprotectedImage(cb_node, image_view_state->image_state.get(), caller,
+                                                         vuids.unprotected_command_buffer)) {
+                                return true;
+                            }
+                            if (binding_info.second.is_writable &&
+                                ValidateProtectedImage(cb_node, image_view_state->image_state.get(), caller,
+                                                       vuids.protected_command_buffer)) {
+                                return true;
+                            }
                         }
 
                         // Here is some unnormalizedCoordinates sampler validations. But because it might take long time to find out
@@ -1160,6 +1176,16 @@ bool CoreChecks::ValidateDescriptorSetBindingData(VkPipelineBindPoint bind_point
                                 report_data->FormatHandle(set).c_str(), caller, binding, index,
                                 report_data->FormatHandle(buffer_view).c_str(),
                                 string_VkFormat(buffer_view_state->create_info.format));
+                        }
+
+                        if (ValidateUnprotectedBuffer(cb_node, buffer_view_state->buffer_state.get(), caller,
+                                                      vuids.unprotected_command_buffer)) {
+                            return true;
+                        }
+                        if (binding_info.second.is_writable &&
+                            ValidateProtectedBuffer(cb_node, buffer_view_state->buffer_state.get(), caller,
+                                                    vuids.protected_command_buffer)) {
+                            return true;
                         }
                     }
                 } else if (descriptor_class == DescriptorClass::AccelerationStructure) {
