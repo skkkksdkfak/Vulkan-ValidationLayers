@@ -697,8 +697,7 @@ unsigned DescriptorRequirementsBitsFromFormat(VkFormat fmt) {
 //  This includes validating that all descriptors in the given bindings are updated,
 //  that any update buffers are valid, and that any dynamic offsets are within the bounds of their buffers.
 // Return true if state is acceptable, or false and write an error message into error string
-bool CoreChecks::ValidateDrawState(VkPipelineBindPoint bind_point, const DescriptorSet *descriptor_set,
-                                   const std::map<uint32_t, DescriptorReqirement> &bindings,
+bool CoreChecks::ValidateDrawState(const DescriptorSet *descriptor_set, const std::unordered_map<uint32_t, DescriptorReqirement> &bindings,
                                    const std::vector<uint32_t> &dynamic_offsets, const CMD_BUFFER_STATE *cb_node,
                                    const std::vector<VkImageView> &attachment_views, const char *caller,
                                    const DrawDispatchVuid &vuids) const {
@@ -1631,7 +1630,7 @@ void cvdescriptorset::DescriptorSet::PerformCopyUpdate(ValidationStateTracker *d
 //   to be used in a draw by the given cb_node
 void cvdescriptorset::DescriptorSet::UpdateDrawState(ValidationStateTracker *device_data, CMD_BUFFER_STATE *cb_node,
                                                      CMD_TYPE cmd_type, const PIPELINE_STATE *pipe,
-                                                     const std::map<uint32_t, DescriptorReqirement> &binding_req_map,
+                                                     const std::unordered_map<uint32_t, DescriptorReqirement> &binding_req_map,
                                                      const char *function) {
     if (!device_data->disabled[command_buffer_state] && !IsPushDescriptor()) {
         // bind cb to this descriptor set
@@ -2845,7 +2844,7 @@ bool CoreChecks::ValidateAllocateDescriptorSets(const VkDescriptorSetAllocateInf
 const BindingReqMap &cvdescriptorset::PrefilterBindRequestMap::FilteredMap(const CMD_BUFFER_STATE &cb_state,
                                                                            const PIPELINE_STATE &pipeline) {
     if (IsManyDescriptors()) {
-        filtered_map_.reset(new std::map<uint32_t, DescriptorReqirement>());
+        filtered_map_.reset(new std::unordered_map<uint32_t, DescriptorReqirement>());
         descriptor_set_.FilterBindingReqs(cb_state, pipeline, orig_map_, filtered_map_.get());
         return *filtered_map_;
     }

@@ -386,8 +386,9 @@ class CoreChecks : public ValidationStateTracker {
     VkResult CoreLayerGetValidationCacheDataEXT(VkDevice device, VkValidationCacheEXT validationCache, size_t* pDataSize,
                                                 void* pData);
     // For given bindings validate state at time of draw is correct, returning false on error and writing error details into string*
-    bool ValidateDrawState(VkPipelineBindPoint bind_point, const cvdescriptorset::DescriptorSet* descriptor_set,
-                           const std::map<uint32_t, DescriptorReqirement>& bindings, const std::vector<uint32_t>& dynamic_offsets,
+    bool ValidateDrawState(const cvdescriptorset::DescriptorSet* descriptor_set,
+                           const std::unordered_map<uint32_t, DescriptorReqirement>& bindings,
+                           const std::vector<uint32_t>& dynamic_offsets,
                            const CMD_BUFFER_STATE* cb_node, const std::vector<VkImageView>& attachment_views, const char* caller,
                            const DrawDispatchVuid& vuids) const;
     bool ValidateDescriptorSetBindingData(const CMD_BUFFER_STATE* cb_node,
