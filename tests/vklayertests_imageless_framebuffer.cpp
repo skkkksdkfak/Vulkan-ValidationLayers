@@ -544,7 +544,7 @@ TEST_F(VkLayerTest, ImagelessFramebufferCreationTests) {
     // Mismatched layer count, multiview disabled
     framebufferCreateInfo.layers = 2;
     const char* mismatchedLayersNoMultiviewVuid =
-        multiviewSupported ? "VUID-VkFramebufferCreateInfo-renderPass-03199" : "VUID-VkFramebufferCreateInfo-flags-03200";
+        multiviewSupported ? "VUID-VkFramebufferCreateInfo-renderPass-04546" : "VUID-VkFramebufferCreateInfo-flags-04547";
     m_errorMonitor->SetDesiredFailureMsg(kErrorBit, mismatchedLayersNoMultiviewVuid);
     vk::CreateFramebuffer(m_device->device(), &framebufferCreateInfo, nullptr, &framebuffer);
     m_errorMonitor->VerifyFound();
