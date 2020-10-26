@@ -1192,10 +1192,10 @@ bool CoreChecks::ValidateCmdBufDrawState(const CMD_BUFFER_STATE *cb_node, CMD_TY
                 }
 
                 uint32_t issue_index = 0;
-                int ret = ValidatePushConstantSetUpdate(it->second, entrypoint->push_constant_used_in_shader, issue_index);
+                const auto ret = ValidatePushConstantSetUpdate(it->second, entrypoint->push_constant_used_in_shader, issue_index);
 
                 // "not set" error has been printed in ValidatePushConstantUsage.
-                if (ret == 2) {
+                if (ret == PC_Byte_Not_Updated) {
                     const auto loc_descr = entrypoint->push_constant_used_in_shader.GetLocationDesc(issue_index);
                     LogObjectList objlist(cb_node->commandBuffer);
                     objlist.add(pipeline_layout->layout);
