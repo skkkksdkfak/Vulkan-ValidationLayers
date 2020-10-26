@@ -553,26 +553,6 @@ TEST_F(VkLayerTest, ImagelessFramebufferCreationTests) {
     }
     framebufferCreateInfo.layers = 1;
 
-    // Mismatched width
-    framebufferCreateInfo.width += 1;
-    m_errorMonitor->SetDesiredFailureMsg(kErrorBit, "VUID-VkFramebufferCreateInfo-flags-03192");
-    vk::CreateFramebuffer(m_device->device(), &framebufferCreateInfo, nullptr, &framebuffer);
-    m_errorMonitor->VerifyFound();
-    if (framebuffer != VK_NULL_HANDLE) {
-        vk::DestroyFramebuffer(m_device->device(), framebuffer, nullptr);
-    }
-    framebufferCreateInfo.width -= 1;
-
-    // Mismatched height
-    framebufferCreateInfo.height += 1;
-    m_errorMonitor->SetDesiredFailureMsg(kErrorBit, "VUID-VkFramebufferCreateInfo-flags-03193");
-    vk::CreateFramebuffer(m_device->device(), &framebufferCreateInfo, nullptr, &framebuffer);
-    m_errorMonitor->VerifyFound();
-    if (framebuffer != VK_NULL_HANDLE) {
-        vk::DestroyFramebuffer(m_device->device(), framebuffer, nullptr);
-    }
-    framebufferCreateInfo.height -= 1;
-
     vk::DestroyRenderPass(m_device->device(), renderPass, nullptr);
 }
 

@@ -8399,24 +8399,6 @@ bool CoreChecks::ValidateFramebufferCreateInfo(const VkFramebufferCreateInfo *pC
                                          i, aii.layerCount, pCreateInfo->layers);
                         }
                     }
-
-                    if (!device_extensions.vk_ext_fragment_density_map && !device_extensions.vk_ext_fragment_density_map_2) {
-                        if (aii.width < pCreateInfo->width) {
-                            skip |= LogError(
-                                device, "VUID-VkFramebufferCreateInfo-flags-03192",
-                                "vkCreateFramebuffer(): VkFramebufferCreateInfo attachment info #%u has a width of only #%u, "
-                                "but framebuffer has a width of #%u.",
-                                i, aii.width, pCreateInfo->width);
-                        }
-
-                        if (aii.height < pCreateInfo->height) {
-                            skip |= LogError(
-                                device, "VUID-VkFramebufferCreateInfo-flags-03193",
-                                "vkCreateFramebuffer(): VkFramebufferCreateInfo attachment info #%u has a height of only #%u, "
-                                "but framebuffer has a height of #%u.",
-                                i, aii.height, pCreateInfo->height);
-                        }
-                    }
                 }
 
                 // Validate image usage
