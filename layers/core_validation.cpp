@@ -8288,18 +8288,29 @@ bool CoreChecks::ValidateFramebufferCreateInfo(const VkFramebufferCreateInfo *pC
                         uint32_t mip_height = max(1u, ici->extent.height >> mip_level);
                         if (!(rpci->pAttachments[i].initialLayout == VK_IMAGE_LAYOUT_FRAGMENT_DENSITY_MAP_OPTIMAL_EXT ||
                               rpci->pAttachments[i].finalLayout == VK_IMAGE_LAYOUT_FRAGMENT_DENSITY_MAP_OPTIMAL_EXT)) {
-                            if ((ivci.subresourceRange.layerCount < pCreateInfo->layers) || (mip_width < pCreateInfo->width) ||
-                                (mip_height < pCreateInfo->height)) {
-                                skip |= LogError(
-                                    device, "VUID-VkFramebufferCreateInfo-pAttachments-00882",
-                                    "vkCreateFramebuffer(): VkFramebufferCreateInfo attachment #%u mip level %u has dimensions "
-                                    "smaller than the corresponding framebuffer dimensions. Here are the respective dimensions for "
-                                    "attachment #%u, framebuffer:\n"
-                                    "width: %u, %u\n"
-                                    "height: %u, %u\n"
-                                    "layerCount: %u, %u\n",
-                                    i, ivci.subresourceRange.baseMipLevel, i, mip_width, pCreateInfo->width, mip_height,
-                                    pCreateInfo->height, ivci.subresourceRange.layerCount, pCreateInfo->layers);
+                            if (ivci.subresourceRange.layerCount < pCreateInfo->layers) {
+                                skip |= LogError(device, "VUID-VkFramebufferCreateInfo-flags-04535",
+                                                 "vkCreateFramebuffer(): VkFramebufferCreateInfo attachment #%u mip level %u has "
+                                                 "dimensions smaller than the corresponding framebuffer dimensions. The layerCount "
+                                                 "for attachment #%u, framebuffer: %u, %u\n",
+                                                 i, ivci.subresourceRange.baseMipLevel, i, ivci.subresourceRange.layerCount,
+                                                 pCreateInfo->layers);
+                            }
+                            if (mip_width < pCreateInfo->width) {
+                                skip |= LogError(device, "VUID-VkFramebufferCreateInfo-flags-04533",
+                                                 "vkCreateFramebuffer(): VkFramebufferCreateInfo attachment #%u mip level %u has "
+                                                 "dimensions smaller than the corresponding framebuffer dimensions. The width for "
+                                                 "attachment #%u, framebuffer: %u, %u\n",
+                                                 i, ivci.subresourceRange.baseMipLevel, i, mip_width, pCreateInfo->width);
+                            }
+                            if (mip_height < pCreateInfo->height) {
+                                skip |=
+                                    LogError(device, "VUID-VkFramebufferCreateInfo-flags-04534",
+                                             "vkCreateFramebuffer(): VkFramebufferCreateInfo attachment #%u mip level %u has "
+                                             "dimensions smaller than the corresponding framebuffer dimensions. The height for "
+                                             "attachment #%u, framebuffer: %u, %u\n",
+                                             i, ivci.subresourceRange.baseMipLevel, i, mip_width, pCreateInfo->width, mip_height,
+                                             pCreateInfo->height, ivci.subresourceRange.layerCount, pCreateInfo->layers);
                             }
                         } else {
                             if (device_extensions.vk_ext_fragment_density_map || device_extensions.vk_ext_fragment_density_map_2) {
