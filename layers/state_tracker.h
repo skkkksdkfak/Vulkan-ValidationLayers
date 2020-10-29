@@ -340,6 +340,12 @@ static inline VkDeviceSize GetBufferSizeFromCopyImage(const BufferImageCopyRegio
     return buffer_size;
 }
 
+enum PushConstantByteState {
+    PC_Byte_Updated = 0,
+    PC_Byte_Not_Set = 1,
+    PC_Byte_Not_Updated = 2,
+};
+
 struct SHADER_MODULE_STATE;
 
 class ValidationStateTracker : public ValidationObject {
@@ -1350,6 +1356,7 @@ class ValidationStateTracker : public ValidationObject {
         VkPhysicalDevicePerformanceQueryPropertiesKHR performance_query_props;
         VkPhysicalDeviceSampleLocationsPropertiesEXT sample_locations_props;
         VkPhysicalDeviceCustomBorderColorPropertiesEXT custom_border_color_props;
+        VkPhysicalDeviceMultiviewProperties multiview_props;
     };
     DeviceExtensionProperties phys_dev_ext_props = {};
     std::vector<VkCooperativeMatrixPropertiesNV> cooperative_matrix_properties;

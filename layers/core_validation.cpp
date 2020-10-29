@@ -1055,11 +1055,9 @@ static bool VerifySetLayoutCompatibility(const debug_report_data *report_data, c
 bool CoreChecks::ValidateCmdBufDrawState(const CMD_BUFFER_STATE *cb_node, CMD_TYPE cmd_type, const bool indexed,
                                          const VkPipelineBindPoint bind_point, const char *function) const {
     const DrawDispatchVuid vuid = GetDrawDispatchVuid(cmd_type);
-    const auto last_bound_it = cb_node->lastBound.find(bind_point);
-    const PIPELINE_STATE *pPipe = nullptr;
-    if (last_bound_it != cb_node->lastBound.cend()) {
-        pPipe = last_bound_it->second.pipeline_state;
-    }
+    const auto lv_bind_point = ConvertToLvlBindPoint(bind_point);
+    const auto &state = cb_node->lastBound[lv_bind_point];
+    const auto *pPipe = state.pipeline_state;
 
     if (nullptr == pPipe) {
         return LogError(cb_node->commandBuffer, vuid.pipeline_bound,
@@ -1070,7 +1068,6 @@ bool CoreChecks::ValidateCmdBufDrawState(const CMD_BUFFER_STATE *cb_node, CMD_TY
     }
 
     bool result = false;
-    auto const &state = last_bound_it->second;
     std::vector<VkImageView> attachment_views;
 
     if (VK_PIPELINE_BIND_POINT_GRAPHICS == bind_point) {
@@ -1156,10 +1153,10 @@ bool CoreChecks::ValidateCmdBufDrawState(const CMD_BUFFER_STATE *cb_node, CMD_TY
                                         state.per_set[setIndex].validated_set_binding_req_map.begin(),
                                         state.per_set[setIndex].validated_set_binding_req_map.end(),
                                         std::inserter(delta_reqs, delta_reqs.begin()));
-                    result |= ValidateDrawState(bind_point, descriptor_set, delta_reqs, state.per_set[setIndex].dynamicOffsets,
+                    result |= ValidateDrawState(descriptor_set, delta_reqs, state.per_set[setIndex].dynamicOffsets,
                                                 cb_node, attachment_views, function, vuid);
                 } else {
-                    result |= ValidateDrawState(bind_point, descriptor_set, binding_req_map, state.per_set[setIndex].dynamicOffsets,
+                    result |= ValidateDrawState(descriptor_set, binding_req_map, state.per_set[setIndex].dynamicOffsets,
                                                 cb_node, attachment_views, function, vuid);
                 }
             }
@@ -1195,10 +1192,10 @@ bool CoreChecks::ValidateCmdBufDrawState(const CMD_BUFFER_STATE *cb_node, CMD_TY
                 }
 
                 uint32_t issue_index = 0;
-                int ret = ValidatePushConstantSetUpdate(it->second, entrypoint->push_constant_used_in_shader, issue_index);
+                const auto ret = ValidatePushConstantSetUpdate(it->second, entrypoint->push_constant_used_in_shader, issue_index);
 
                 // "not set" error has been printed in ValidatePushConstantUsage.
-                if (ret == 2) {
+                if (ret == PC_Byte_Not_Updated) {
                     const auto loc_descr = entrypoint->push_constant_used_in_shader.GetLocationDesc(issue_index);
                     LogObjectList objlist(cb_node->commandBuffer);
                     objlist.add(pipeline_layout->layout);
@@ -2795,7 +2792,7 @@ bool CoreChecks::ValidateCommandBuffersForSubmit(VkQueue queue, const VkSubmitIn
                             std::string error;
                             std::vector<uint32_t> dynamicOffsets;
                             // dynamic data isn't allowed in UPDATE_AFTER_BIND, so dynamicOffsets is always empty.
-                            skip |= ValidateDescriptorSetBindingData(cmd_info.bind_point, cb_node, set_node, dynamicOffsets,
+                            skip |= ValidateDescriptorSetBindingData(cb_node, set_node, dynamicOffsets,
                                                                      binding_info, cmd_info.framebuffer, cmd_info.attachment_views,
                                                                      function.c_str(), GetDrawDispatchVuid(cmd_info.cmd_type));
                         }
@@ -12574,23 +12571,22 @@ bool CoreChecks::PreCallValidateCmdSetSampleLocationsEXT(VkCommandBuffer command
     // Minimal validation for command buffer state
     skip |= ValidateCmd(cb_state, CMD_SETSAMPLELOCATIONSEXT, "vkCmdSetSampleLocationsEXT()");
     skip |= ValidateSampleLocationsInfo(pSampleLocationsInfo, "vkCmdSetSampleLocationsEXT");
-    const auto last_bound_it = cb_state->lastBound.find(VK_PIPELINE_BIND_POINT_GRAPHICS);
-    if (last_bound_it != cb_state->lastBound.cend()) {
-        const PIPELINE_STATE *pPipe = last_bound_it->second.pipeline_state;
-        if (pPipe != nullptr) {
-            // Check same error with different log messages
-            const safe_VkPipelineMultisampleStateCreateInfo *multisample_state = pPipe->graphicsPipelineCI.pMultisampleState;
-            if (multisample_state == nullptr) {
-                skip |= LogError(cb_state->commandBuffer, "VUID-vkCmdSetSampleLocationsEXT-sampleLocationsPerPixel-01529",
-                                 "vkCmdSetSampleLocationsEXT(): pSampleLocationsInfo->sampleLocationsPerPixel must be equal to "
-                                 "rasterizationSamples, but the bound graphics pipeline was created without a multisample state");
-            } else if (multisample_state->rasterizationSamples != pSampleLocationsInfo->sampleLocationsPerPixel) {
-                skip |= LogError(cb_state->commandBuffer, "VUID-vkCmdSetSampleLocationsEXT-sampleLocationsPerPixel-01529",
-                                 "vkCmdSetSampleLocationsEXT(): pSampleLocationsInfo->sampleLocationsPerPixel (%s) is not equal to "
-                                 "the last bound pipeline's rasterizationSamples (%s)",
-                                 string_VkSampleCountFlagBits(pSampleLocationsInfo->sampleLocationsPerPixel),
-                                 string_VkSampleCountFlagBits(multisample_state->rasterizationSamples));
-            }
+
+    const auto lv_bind_point = ConvertToLvlBindPoint(VK_PIPELINE_BIND_POINT_GRAPHICS);
+    const auto *pPipe = cb_state->lastBound[lv_bind_point].pipeline_state;
+    if (pPipe != nullptr) {
+        // Check same error with different log messages
+        const safe_VkPipelineMultisampleStateCreateInfo *multisample_state = pPipe->graphicsPipelineCI.pMultisampleState;
+        if (multisample_state == nullptr) {
+            skip |= LogError(cb_state->commandBuffer, "VUID-vkCmdSetSampleLocationsEXT-sampleLocationsPerPixel-01529",
+                                "vkCmdSetSampleLocationsEXT(): pSampleLocationsInfo->sampleLocationsPerPixel must be equal to "
+                                "rasterizationSamples, but the bound graphics pipeline was created without a multisample state");
+        } else if (multisample_state->rasterizationSamples != pSampleLocationsInfo->sampleLocationsPerPixel) {
+            skip |= LogError(cb_state->commandBuffer, "VUID-vkCmdSetSampleLocationsEXT-sampleLocationsPerPixel-01529",
+                                "vkCmdSetSampleLocationsEXT(): pSampleLocationsInfo->sampleLocationsPerPixel (%s) is not equal to "
+                                "the last bound pipeline's rasterizationSamples (%s)",
+                                string_VkSampleCountFlagBits(pSampleLocationsInfo->sampleLocationsPerPixel),
+                                string_VkSampleCountFlagBits(multisample_state->rasterizationSamples));
         }
     }
 

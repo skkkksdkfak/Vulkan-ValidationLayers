@@ -180,19 +180,21 @@ struct less<SamplerUsedByImage> {
 };
 }  // namespace std
 
+struct SAMPLER_STATE;
 struct DescriptorReqirement {
     descriptor_req reqs;
-    std::vector<std::map<SamplerUsedByImage, std::map<VkDescriptorSet, const cvdescriptorset::Descriptor *>>>
-        samplers_used_by_image;  // Copy from StageState.interface_var. BUT it combines from plural shader stages.
+    bool is_writable;
+    std::vector<std::map<SamplerUsedByImage, const cvdescriptorset::Descriptor *>>
+        samplers_used_by_image;  // Copy from StageStCmdDrawDispatchInfoate.interface_var. It combines from plural shader stages.
                                  // The index of array is index of image.
-    DescriptorReqirement() : reqs(descriptor_req(0)) {}
+    DescriptorReqirement() : reqs(descriptor_req(0)), is_writable(false) {}
 };
 
 inline bool operator==(const DescriptorReqirement &a, const DescriptorReqirement &b) NOEXCEPT { return a.reqs == b.reqs; }
 
 inline bool operator<(const DescriptorReqirement &a, const DescriptorReqirement &b) NOEXCEPT { return a.reqs < b.reqs; }
 
-typedef std::map<uint32_t, DescriptorReqirement> BindingReqMap;
+typedef std::unordered_map<uint32_t, DescriptorReqirement> BindingReqMap;
 
 struct DESCRIPTOR_POOL_STATE : BASE_NODE {
     VkDescriptorPool pool;
@@ -518,6 +520,7 @@ class IMAGE_VIEW_STATE : public BASE_NODE {
     VkSampleCountFlagBits samples;
     unsigned descriptor_format_bits;
     VkSamplerYcbcrConversion samplerConversion;  // Handle of the ycbcr sampler conversion the image was created with, if any
+    VkFilterCubicImageViewImageFormatPropertiesEXT filter_cubic_props;
     VkFormatFeatureFlags format_features;
     std::shared_ptr<IMAGE_STATE> image_state;
     IMAGE_VIEW_STATE(const std::shared_ptr<IMAGE_STATE> &image_state, VkImageView iv, const VkImageViewCreateInfo *ci);
@@ -1063,6 +1066,8 @@ struct LAST_BOUND_STATE {
         }
         push_descriptor_set.reset(ds);
     }
+
+    inline bool IsUsing() const { return pipeline_state ? true : false; }
 };
 
 static inline bool CompatForSet(uint32_t set, const LAST_BOUND_STATE &a, const std::vector<PipelineLayoutCompatId> &b) {
@@ -1211,6 +1216,40 @@ typedef ImageSubresourceLayoutMap::LayoutMap GlobalImageLayoutRangeMap;
 typedef std::unordered_map<VkImage, std::unique_ptr<GlobalImageLayoutRangeMap>> GlobalImageLayoutMap;
 typedef std::unordered_map<VkImage, std::unique_ptr<ImageSubresourceLayoutMap>> CommandBufferImageLayoutMap;
 
+enum LvlBindPoint {
+    BindPoint_Graphics = 0,
+    BindPoint_Computer = 1,
+    BindPoint_Ray_Tracing = 2,
+};
+
+static VkPipelineBindPoint inline ConvertToPipelineBindPoint(LvlBindPoint bind_point) {
+    switch (bind_point) {
+        case BindPoint_Graphics:
+            return VK_PIPELINE_BIND_POINT_GRAPHICS;
+        case BindPoint_Computer:
+            return VK_PIPELINE_BIND_POINT_COMPUTE;
+        case BindPoint_Ray_Tracing:
+            return VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR;
+        default:
+            return VK_PIPELINE_BIND_POINT_MAX_ENUM;
+    }
+    return VK_PIPELINE_BIND_POINT_MAX_ENUM;
+}
+
+static LvlBindPoint inline ConvertToLvlBindPoint(VkPipelineBindPoint bind_point) {
+    switch (bind_point) {
+        case VK_PIPELINE_BIND_POINT_GRAPHICS:
+            return BindPoint_Graphics;
+        case VK_PIPELINE_BIND_POINT_COMPUTE:
+            return BindPoint_Computer;
+        case VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR:
+            return BindPoint_Ray_Tracing;
+        default:
+            return LvlBindPoint(~0U);
+    }
+    return LvlBindPoint(~0U);
+}
+
 class FRAMEBUFFER_STATE;
 // Cmd Buffer Wrapper Struct - TODO : This desperately needs its own class
 struct CMD_BUFFER_STATE : public BASE_NODE {
@@ -1238,10 +1277,9 @@ struct CMD_BUFFER_STATE : public BASE_NODE {
     //  long-term may want to create caches of "lastBound" states and could have
     //  each individual CMD_NODE referencing its own "lastBound" state
     // Store last bound state for Gfx & Compute pipeline bind points
-    std::map<uint32_t, LAST_BOUND_STATE> lastBound;
+    std::array<LAST_BOUND_STATE, 3> lastBound;  // index is LvlBindPoint.
 
     struct CmdDrawDispatchInfo {
-        VkPipelineBindPoint bind_point;
         CMD_TYPE cmd_type;
         std::string function;
         std::vector<std::pair<const uint32_t, DescriptorReqirement>> binding_infos;
@@ -1309,7 +1347,8 @@ struct CMD_BUFFER_STATE : public BASE_NODE {
     std::vector<uint8_t> push_constant_data;
     PushConstantRangesId push_constant_data_ranges;
 
-    std::map<VkShaderStageFlagBits, std::vector<int8_t>> push_constant_data_update;  // -1: not set, 0: not update, 1: update,
+    std::map<VkShaderStageFlagBits, std::vector<uint8_t>>
+        push_constant_data_update;  // vector's value is enum PushConstantByteState.
     VkPipelineLayout push_constant_pipeline_layout_set;
 
     // Used for Best Practices tracking
@@ -1318,14 +1357,6 @@ struct CMD_BUFFER_STATE : public BASE_NODE {
     std::vector<IMAGE_VIEW_STATE *> imagelessFramebufferAttachments;
 
     bool transform_feedback_active{false};
-
-    const cvdescriptorset::DescriptorSet *GetDescriptorSet(VkPipelineBindPoint bind_point, uint32_t set) const;
-
-    const cvdescriptorset::Descriptor *GetDescriptor(VkShaderStageFlagBits shader_stage, uint32_t set, uint32_t binding,
-                                                     uint32_t index) const;
-
-    const cvdescriptorset::Descriptor *GetDescriptor(VkPipelineBindPoint bind_point, uint32_t set, uint32_t binding,
-                                                     uint32_t index) const;
 };
 
 static inline const QFOTransferBarrierSets<VkImageMemoryBarrier> &GetQFOBarrierSets(
@@ -1430,6 +1461,7 @@ struct DeviceFeatures {
     VkPhysicalDeviceCustomBorderColorFeaturesEXT custom_border_color_features;
     VkPhysicalDevicePipelineCreationCacheControlFeaturesEXT pipeline_creation_cache_control_features;
     VkPhysicalDeviceExtendedDynamicStateFeaturesEXT extended_dynamic_state_features;
+    VkPhysicalDeviceMultiviewFeatures multiview_features;
 };
 
 enum RenderPassCreateVersion { RENDER_PASS_VERSION_1 = 0, RENDER_PASS_VERSION_2 = 1 };

@@ -62,6 +62,12 @@ struct DrawDispatchVuid {
     const char* sampler_bias_offset;
     const char* vertex_binding_attribute;
     const char* dynamic_state_setting_commands;
+    const char* unprotected_command_buffer;
+    const char* protected_command_buffer;
+    const char* protected_command_buffer_pipeline_stages;
+    const char* maxMultiviewInstanceIndex; // TODO: Some instance values are in VkBuffer.The validation in those Cmds is skipped.
+    const char* filterCubic;
+    const char* filterCubicMinmax;
 };
 
 typedef struct {
@@ -250,6 +256,8 @@ class CoreChecks : public ValidationStateTracker {
                                uint32_t queryCount) const;
 
     const DrawDispatchVuid& GetDrawDispatchVuid(CMD_TYPE cmd_type) const;
+    bool ValidateCmdDrawInstance(VkCommandBuffer commandBuffer, uint32_t instanceCount, uint32_t firstInstance, CMD_TYPE cmd_type,
+                                 const char* caller) const;
     bool ValidateCmdDrawType(VkCommandBuffer cmd_buffer, bool indexed, VkPipelineBindPoint bind_point, CMD_TYPE cmd_type,
                              const char* caller, VkQueueFlags queue_flags) const;
     bool ValidateCmdNextSubpass(RenderPassCreateVersion rp_version, VkCommandBuffer commandBuffer) const;
@@ -378,11 +386,12 @@ class CoreChecks : public ValidationStateTracker {
     VkResult CoreLayerGetValidationCacheDataEXT(VkDevice device, VkValidationCacheEXT validationCache, size_t* pDataSize,
                                                 void* pData);
     // For given bindings validate state at time of draw is correct, returning false on error and writing error details into string*
-    bool ValidateDrawState(VkPipelineBindPoint bind_point, const cvdescriptorset::DescriptorSet* descriptor_set,
-                           const std::map<uint32_t, DescriptorReqirement>& bindings, const std::vector<uint32_t>& dynamic_offsets,
+    bool ValidateDrawState(const cvdescriptorset::DescriptorSet* descriptor_set,
+                           const std::unordered_map<uint32_t, DescriptorReqirement>& bindings,
+                           const std::vector<uint32_t>& dynamic_offsets,
                            const CMD_BUFFER_STATE* cb_node, const std::vector<VkImageView>& attachment_views, const char* caller,
                            const DrawDispatchVuid& vuids) const;
-    bool ValidateDescriptorSetBindingData(VkPipelineBindPoint bind_point, const CMD_BUFFER_STATE* cb_node,
+    bool ValidateDescriptorSetBindingData(const CMD_BUFFER_STATE* cb_node,
                                           const cvdescriptorset::DescriptorSet* descriptor_set,
                                           const std::vector<uint32_t>& dynamic_offsets,
                                           std::pair<const uint32_t, DescriptorReqirement>& binding_info, VkFramebuffer framebuffer,
@@ -448,8 +457,9 @@ class CoreChecks : public ValidationStateTracker {
                                             PIPELINE_STATE const* pipeline, uint32_t subpass_index) const;
     bool ValidatePushConstantUsage(const PIPELINE_STATE& pipeline, SHADER_MODULE_STATE const* src,
                                    VkPipelineShaderStageCreateInfo const* pStage) const;
-    int ValidatePushConstantSetUpdate(const std::vector<int8_t>& push_constant_data_update,
-                                      const shader_struct_member& push_constant_used_in_shader, uint32_t& out_issue_index) const;
+    PushConstantByteState ValidatePushConstantSetUpdate(const std::vector<uint8_t>& push_constant_data_update,
+                                                        const shader_struct_member& push_constant_used_in_shader,
+                                                        uint32_t& out_issue_index) const;
     bool ValidateSpecializationOffsets(VkPipelineShaderStageCreateInfo const* info) const;
     bool RequirePropertyFlag(VkBool32 check, char const* flag, char const* structure) const;
     bool RequireFeature(VkBool32 feature, char const* feature_name) const;

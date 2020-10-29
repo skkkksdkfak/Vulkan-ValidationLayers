@@ -697,8 +697,8 @@ unsigned DescriptorRequirementsBitsFromFormat(VkFormat fmt) {
 //  This includes validating that all descriptors in the given bindings are updated,
 //  that any update buffers are valid, and that any dynamic offsets are within the bounds of their buffers.
 // Return true if state is acceptable, or false and write an error message into error string
-bool CoreChecks::ValidateDrawState(VkPipelineBindPoint bind_point, const DescriptorSet *descriptor_set,
-                                   const std::map<uint32_t, DescriptorReqirement> &bindings,
+bool CoreChecks::ValidateDrawState(const DescriptorSet *descriptor_set,
+                                   const std::unordered_map<uint32_t, DescriptorReqirement> &bindings,
                                    const std::vector<uint32_t> &dynamic_offsets, const CMD_BUFFER_STATE *cb_node,
                                    const std::vector<VkImageView> &attachment_views, const char *caller,
                                    const DrawDispatchVuid &vuids) const {
@@ -722,59 +722,14 @@ bool CoreChecks::ValidateDrawState(VkPipelineBindPoint bind_point, const Descrip
             // or the view could have been destroyed
             continue;
         }
-        result |= ValidateDescriptorSetBindingData(bind_point, cb_node, descriptor_set, dynamic_offsets, binding_pair, framebuffer,
+        result |= ValidateDescriptorSetBindingData(cb_node, descriptor_set, dynamic_offsets, binding_pair, framebuffer,
                                                    attachment_views, caller, vuids);
     }
     return result;
 }
 
-std::vector<const SAMPLER_STATE *> GetUnnormalizedCoordinatesSamplerStatesFromDescriptorSet(
-    VkPipelineBindPoint bind_point, const cvdescriptorset::DescriptorClass descriptor_class,
-    const cvdescriptorset::Descriptor &descriptor, const CMD_BUFFER_STATE &cb_node,
-    std::pair<const uint32_t, DescriptorReqirement> &binding_info, uint32_t image_index) {
-    std::vector<const SAMPLER_STATE *> sampler_states;
-
-    if (descriptor_class == cvdescriptorset::DescriptorClass::ImageSampler) {
-        const cvdescriptorset::ImageSamplerDescriptor *image_descriptor =
-            static_cast<const cvdescriptorset::ImageSamplerDescriptor *>(&descriptor);
-        const auto *sampler_state = image_descriptor->GetSamplerState();
-
-        if (sampler_state->createInfo.unnormalizedCoordinates) sampler_states.emplace_back(sampler_state);
-
-    } else if (descriptor_class == cvdescriptorset::DescriptorClass::Image &&
-               binding_info.second.samplers_used_by_image.size() > image_index) {
-        for (auto &sampler : binding_info.second.samplers_used_by_image[image_index]) {
-            auto *descriptorset = cb_node.GetDescriptorSet(bind_point, sampler.first.sampler_slot.first);
-            if (!descriptorset) {
-                continue;
-            }
-            const auto key = descriptorset->GetSet();
-            auto it = sampler.second.find(key);
-            if (it != sampler.second.end()) {
-                const auto *sampler_state = static_cast<const cvdescriptorset::SamplerDescriptor *>(it->second)->GetSamplerState();
-                if (sampler_state->createInfo.unnormalizedCoordinates) {
-                    sampler_states.emplace_back(sampler_state);
-                }
-                continue;
-            }
-
-            const auto *descriptor2 =
-                descriptorset->GetDescriptorFromBinding(sampler.first.sampler_slot.second, sampler.first.sampler_index);
-            if (descriptor2->GetClass() == cvdescriptorset::DescriptorClass::PlainSampler) {
-                sampler.second.emplace(key, descriptor2);
-
-                const auto *sampler_state = static_cast<const cvdescriptorset::SamplerDescriptor *>(descriptor2)->GetSamplerState();
-                if (sampler_state->createInfo.unnormalizedCoordinates) {
-                    sampler_states.emplace_back(sampler_state);
-                }
-            }
-        }
-    }
-    return sampler_states;
-}
-
-bool CoreChecks::ValidateDescriptorSetBindingData(VkPipelineBindPoint bind_point, const CMD_BUFFER_STATE *cb_node,
-                                                  const DescriptorSet *descriptor_set, const std::vector<uint32_t> &dynamic_offsets,
+bool CoreChecks::ValidateDescriptorSetBindingData(const CMD_BUFFER_STATE *cb_node, const DescriptorSet *descriptor_set,
+                                                  const std::vector<uint32_t> &dynamic_offsets,
                                                   std::pair<const uint32_t, DescriptorReqirement> &binding_info,
                                                   VkFramebuffer framebuffer, const std::vector<VkImageView> &attachment_views,
                                                   const char *caller, const DrawDispatchVuid &vuids) const {
@@ -874,22 +829,41 @@ bool CoreChecks::ValidateDescriptorSetBindingData(VkPipelineBindPoint bind_point
                                 }
                             }
                         }
+                        if (ValidateUnprotectedBuffer(cb_node, buffer_node, caller, vuids.unprotected_command_buffer)) {
+                            return true;
+                        }
+                        if (binding_info.second.is_writable &&
+                            ValidateProtectedBuffer(cb_node, buffer_node, caller, vuids.protected_command_buffer)) {
+                            return true;
+                        }
                     }
                 } else if (descriptor_class == DescriptorClass::ImageSampler || descriptor_class == DescriptorClass::Image) {
                     VkImageView image_view;
                     VkImageLayout image_layout;
                     const IMAGE_VIEW_STATE *image_view_state;
+                    std::vector<const SAMPLER_STATE *> sampler_states;
 
                     if (descriptor_class == DescriptorClass::ImageSampler) {
                         const ImageSamplerDescriptor *image_descriptor = static_cast<const ImageSamplerDescriptor *>(descriptor);
                         image_view = image_descriptor->GetImageView();
                         image_view_state = image_descriptor->GetImageViewState();
                         image_layout = image_descriptor->GetImageLayout();
+                        sampler_states.emplace_back(image_descriptor->GetSamplerState());
                     } else {
                         const ImageDescriptor *image_descriptor = static_cast<const ImageDescriptor *>(descriptor);
                         image_view = image_descriptor->GetImageView();
                         image_view_state = image_descriptor->GetImageViewState();
                         image_layout = image_descriptor->GetImageLayout();
+
+                        if (binding_info.second.samplers_used_by_image.size() > index) {
+                            for (auto &sampler : binding_info.second.samplers_used_by_image[index]) {
+                                if (sampler.second) {
+                                    const auto *sampler_state =
+                                        static_cast<const cvdescriptorset::SamplerDescriptor *>(sampler.second)->GetSamplerState();
+                                    if (sampler_state) sampler_states.emplace_back(sampler_state);
+                                }
+                            }
+                        }
                     }
 
                     if (image_view) {
@@ -906,6 +880,7 @@ bool CoreChecks::ValidateDescriptorSetBindingData(VkPipelineBindPoint bind_point
                                             report_data->FormatHandle(image_view).c_str());
                         }
                         const auto &image_view_ci = image_view_state->create_info;
+                        const auto *image_state = image_view_state->image_state.get();
 
                         if (reqs & DESCRIPTOR_REQ_ALL_VIEW_TYPE_BITS) {
                             if (~reqs & (1 << image_view_ci.viewType)) {
@@ -1026,82 +1001,199 @@ bool CoreChecks::ValidateDescriptorSetBindingData(VkPipelineBindPoint bind_point
                                 }
                                 ++view_index;
                             }
-                        }
-
-                        // Here is some unnormalizedCoordinates sampler validations. But because it might take long time to find out
-                        // samplers, it will look for them when it needs.
-                        std::vector<const SAMPLER_STATE *> unnormalizedCoordinates_sampler_states;
-                        bool update_unnormalizedCoordinates_sampler_states = false;
-
-                        // If ImageView is used by a unnormalizedCoordinates sampler, it needs to check ImageView type
-                        if (image_view_ci.viewType == VK_IMAGE_VIEW_TYPE_3D || image_view_ci.viewType == VK_IMAGE_VIEW_TYPE_CUBE ||
-                            image_view_ci.viewType == VK_IMAGE_VIEW_TYPE_1D_ARRAY ||
-                            image_view_ci.viewType == VK_IMAGE_VIEW_TYPE_2D_ARRAY ||
-                            image_view_ci.viewType == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY) {
-                            update_unnormalizedCoordinates_sampler_states = true;
-                            unnormalizedCoordinates_sampler_states = GetUnnormalizedCoordinatesSamplerStatesFromDescriptorSet(
-                                bind_point, descriptor_class, *descriptor, *cb_node, binding_info, index);
-
-                            for (const auto *sampler_state : unnormalizedCoordinates_sampler_states) {
-                                auto set = descriptor_set->GetSet();
-                                LogObjectList objlist(set);
-                                objlist.add(image_view);
-                                objlist.add(sampler_state->sampler);
-                                return LogError(objlist, vuids.sampler_imageview_type,
-                                                "%s encountered the following validation error at %s time: %s, type: %s in "
-                                                "Descriptor in binding #%" PRIu32 " index %" PRIu32 "is used by %s.",
-                                                report_data->FormatHandle(set).c_str(), caller,
-                                                report_data->FormatHandle(image_view).c_str(),
-                                                string_VkImageViewType(image_view_ci.viewType), binding, index,
-                                                report_data->FormatHandle(sampler_state->sampler).c_str());
+                            if (ValidateUnprotectedImage(cb_node, image_view_state->image_state.get(), caller,
+                                                         vuids.unprotected_command_buffer)) {
+                                return true;
+                            }
+                            if (binding_info.second.is_writable &&
+                                ValidateProtectedImage(cb_node, image_view_state->image_state.get(), caller,
+                                                       vuids.protected_command_buffer)) {
+                                return true;
                             }
                         }
 
-                        // sampler must not be used with any of the SPIR-V OpImageSample* or OpImageSparseSample* instructions
-                        // with ImplicitLod, Dref or Proj in their name
-                        if (reqs & DESCRIPTOR_REQ_SAMPLER_IMPLICITLOD_DREF_PROJ) {
-                            if (!update_unnormalizedCoordinates_sampler_states) {
-                                update_unnormalizedCoordinates_sampler_states = true;
-                                unnormalizedCoordinates_sampler_states = GetUnnormalizedCoordinatesSamplerStatesFromDescriptorSet(
-                                    bind_point, descriptor_class, *descriptor, *cb_node, binding_info, index);
+                        for (const auto *sampler_state : sampler_states) {
+                            if (!sampler_state || sampler_state->destroyed) {
+                                continue;
                             }
 
-                            for (const auto *sampler_state : unnormalizedCoordinates_sampler_states) {
+                            // TODO: Validate 04015 for DescriptorClass::PlainSampler
+                            if ((sampler_state->createInfo.borderColor == VK_BORDER_COLOR_INT_CUSTOM_EXT ||
+                                 sampler_state->createInfo.borderColor == VK_BORDER_COLOR_FLOAT_CUSTOM_EXT) &&
+                                (sampler_state->customCreateInfo.format == VK_FORMAT_UNDEFINED)) {
+                                if (image_view_state->create_info.format == VK_FORMAT_B4G4R4A4_UNORM_PACK16 ||
+                                    image_view_state->create_info.format == VK_FORMAT_B5G6R5_UNORM_PACK16 ||
+                                    image_view_state->create_info.format == VK_FORMAT_B5G5R5A1_UNORM_PACK16) {
+                                    auto set = descriptor_set->GetSet();
+                                    LogObjectList objlist(set);
+                                    objlist.add(sampler_state->sampler);
+                                    objlist.add(image_view_state->image_view);
+                                    return LogError(objlist, "VUID-VkSamplerCustomBorderColorCreateInfoEXT-format-04015",
+                                                    "%s encountered the following validation error at %s time: Sampler %s in "
+                                                    "binding #%" PRIu32 " index %" PRIu32
+                                                    " has a custom border color with format = VK_FORMAT_UNDEFINED and is used to "
+                                                    "sample an image view %s with format %s",
+                                                    report_data->FormatHandle(set).c_str(), caller,
+                                                    report_data->FormatHandle(sampler_state->sampler).c_str(), binding, index,
+                                                    report_data->FormatHandle(image_view_state->image_view).c_str(),
+                                                    string_VkFormat(image_view_state->create_info.format));
+                                }
+                            }
+                            VkFilter sampler_mag_filter = sampler_state->createInfo.magFilter;
+                            VkFilter sampler_min_filter = sampler_state->createInfo.minFilter;
+                            if ((sampler_mag_filter == VK_FILTER_LINEAR || sampler_min_filter == VK_FILTER_LINEAR) &&
+                                !(image_view_state->format_features & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)) {
                                 auto set = descriptor_set->GetSet();
                                 LogObjectList objlist(set);
-                                objlist.add(image_view);
                                 objlist.add(sampler_state->sampler);
-                                return LogError(objlist, vuids.sampler_implicitLod_dref_proj,
-                                                "%s encountered the following validation error at %s time: %s in "
-                                                "Descriptor in binding #%" PRIu32 " index %" PRIu32
-                                                " is used by %s that uses invalid operator.",
-                                                report_data->FormatHandle(set).c_str(), caller,
-                                                report_data->FormatHandle(image_view).c_str(), binding, index,
-                                                report_data->FormatHandle(sampler_state->sampler).c_str());
+                                objlist.add(image_view_state->image_view);
+                                return LogError(objlist, vuids.linear_sampler,
+                                                "sampler (%s) in descriptor set (%s) "
+                                                "is set to use VK_FILTER_LINEAR, then image view's (%s"
+                                                ") format (%s) MUST "
+                                                "contain VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT in its format features.",
+                                                report_data->FormatHandle(sampler_state->sampler).c_str(),
+                                                report_data->FormatHandle(set).c_str(),
+                                                report_data->FormatHandle(image_view_state->image_view).c_str(),
+                                                string_VkFormat(image_view_state->create_info.format));
                             }
-                        }
+                            if (sampler_mag_filter == VK_FILTER_CUBIC_EXT || sampler_min_filter == VK_FILTER_CUBIC_EXT) {
+                                if (!(image_view_state->format_features & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_CUBIC_BIT_EXT)) {
+                                    auto set = descriptor_set->GetSet();
+                                    LogObjectList objlist(set);
+                                    objlist.add(sampler_state->sampler);
+                                    objlist.add(image_view_state->image_view);
+                                    return LogError(objlist, vuids.cubic_sampler,
+                                                    "sampler (%s) in descriptor set (%s) "
+                                                    "is set to use VK_FILTER_CUBIC_EXT, then image view's (%s"
+                                                    ") format (%s) MUST "
+                                                    "contain "
+                                                    "VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_CUBIC_BIT_EXT in "
+                                                    "its format features.",
+                                                    report_data->FormatHandle(sampler_state->sampler).c_str(),
+                                                    report_data->FormatHandle(set).c_str(),
+                                                    report_data->FormatHandle(image_view_state->image_view).c_str(),
+                                                    string_VkFormat(image_view_state->create_info.format));
+                                }
 
-                        // sampler must not be used with any of the SPIR-V OpImageSample* or OpImageSparseSample* instructions
-                        // that includes a LOD bias or any offset values
-                        if (reqs & DESCRIPTOR_REQ_SAMPLER_BIAS_OFFSET) {
-                            if (!update_unnormalizedCoordinates_sampler_states) {
-                                update_unnormalizedCoordinates_sampler_states = true;
-                                unnormalizedCoordinates_sampler_states = GetUnnormalizedCoordinatesSamplerStatesFromDescriptorSet(
-                                    bind_point, descriptor_class, *descriptor, *cb_node, binding_info, index);
+                                const auto reduction_mode_info =
+                                    lvl_find_in_chain<VkSamplerReductionModeCreateInfo>(sampler_state->createInfo.pNext);
+                                if (reduction_mode_info &&
+                                    (reduction_mode_info->reductionMode == VK_SAMPLER_REDUCTION_MODE_MIN ||
+                                     reduction_mode_info->reductionMode == VK_SAMPLER_REDUCTION_MODE_MAX) &&
+                                    !image_view_state->filter_cubic_props.filterCubicMinmax) {
+                                    auto set = descriptor_set->GetSet();
+                                    LogObjectList objlist(set);
+                                    objlist.add(sampler_state->sampler);
+                                    objlist.add(image_view_state->image_view);
+                                    return LogError(objlist, vuids.filterCubicMinmax,
+                                                    "sampler (%s) in descriptor set (%s) "
+                                                    "is set to use VK_FILTER_CUBIC_EXT & %s, but image view (%s) doesn't "
+                                                    "support filterCubicMinmax.",
+                                                    report_data->FormatHandle(sampler_state->sampler).c_str(),
+                                                    string_VkSamplerReductionMode(reduction_mode_info->reductionMode),
+                                                    report_data->FormatHandle(set).c_str(),
+                                                    report_data->FormatHandle(image_view_state->image_view).c_str());
+                                }
+
+                                if (!image_view_state->filter_cubic_props.filterCubic) {
+                                    auto set = descriptor_set->GetSet();
+                                    LogObjectList objlist(set);
+                                    objlist.add(sampler_state->sampler);
+                                    objlist.add(image_view_state->image_view);
+                                    return LogError(
+                                        objlist, vuids.filterCubic,
+                                        "sampler (%s) in descriptor set (%s) "
+                                        "is set to use VK_FILTER_CUBIC_EXT, but image view (%s) doesn't support filterCubic.",
+                                        report_data->FormatHandle(sampler_state->sampler).c_str(),
+                                        report_data->FormatHandle(set).c_str(),
+                                        report_data->FormatHandle(image_view_state->image_view).c_str());
+                                }
                             }
 
-                            for (const auto *sampler_state : unnormalizedCoordinates_sampler_states) {
+                            if ((image_state->createInfo.flags & VK_IMAGE_CREATE_CORNER_SAMPLED_BIT_NV) &&
+                                (sampler_state->createInfo.addressModeU != VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE ||
+                                 sampler_state->createInfo.addressModeV != VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE ||
+                                 sampler_state->createInfo.addressModeW != VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)) {
+                                std::string address_mode_letter =
+                                    (sampler_state->createInfo.addressModeU != VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)   ? "U"
+                                    : (sampler_state->createInfo.addressModeV != VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE) ? "V"
+                                                                                                                        : "W";
+                                VkSamplerAddressMode address_mode =
+                                    (sampler_state->createInfo.addressModeU != VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
+                                        ? sampler_state->createInfo.addressModeU
+                                    : (sampler_state->createInfo.addressModeV != VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
+                                        ? sampler_state->createInfo.addressModeV
+                                        : sampler_state->createInfo.addressModeW;
                                 auto set = descriptor_set->GetSet();
                                 LogObjectList objlist(set);
-                                objlist.add(image_view);
                                 objlist.add(sampler_state->sampler);
-                                return LogError(objlist, vuids.sampler_bias_offset,
-                                                "%s encountered the following validation error at %s time: %s in "
-                                                "Descriptor in binding #%" PRIu32 " index %" PRIu32
-                                                " is used by %s that uses invalid bias or offset operator.",
-                                                report_data->FormatHandle(set).c_str(), caller,
-                                                report_data->FormatHandle(image_view).c_str(), binding, index,
-                                                report_data->FormatHandle(sampler_state->sampler).c_str());
+                                objlist.add(image_state->image);
+                                objlist.add(image_view_state->image_view);
+                                return LogError(objlist, vuids.corner_sampled_address_mode,
+                                                "image (%s) in image view (%s) in descriptor set (%s) is created with flag "
+                                                "VK_IMAGE_CREATE_CORNER_SAMPLED_BIT_NV and can only be sampled using "
+                                                "VK_SAMPLER_ADDRESS_MODE_CLAMP_EDGE, but sampler (%s) has "
+                                                "createInfo.addressMode%s set to %s.",
+                                                report_data->FormatHandle(image_state->image).c_str(),
+                                                report_data->FormatHandle(image_view_state->image_view).c_str(),
+                                                report_data->FormatHandle(set).c_str(),
+                                                report_data->FormatHandle(sampler_state->sampler).c_str(),
+                                                address_mode_letter.c_str(), string_VkSamplerAddressMode(address_mode));
+                            }
+
+                            // UnnormalizedCoordinates sampler validations
+                            if (sampler_state->createInfo.unnormalizedCoordinates) {
+                                // If ImageView is used by a unnormalizedCoordinates sampler, it needs to check ImageView type
+                                if (image_view_ci.viewType == VK_IMAGE_VIEW_TYPE_3D ||
+                                    image_view_ci.viewType == VK_IMAGE_VIEW_TYPE_CUBE ||
+                                    image_view_ci.viewType == VK_IMAGE_VIEW_TYPE_1D_ARRAY ||
+                                    image_view_ci.viewType == VK_IMAGE_VIEW_TYPE_2D_ARRAY ||
+                                    image_view_ci.viewType == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY) {
+                                    auto set = descriptor_set->GetSet();
+                                    LogObjectList objlist(set);
+                                    objlist.add(image_view);
+                                    objlist.add(sampler_state->sampler);
+                                    return LogError(objlist, vuids.sampler_imageview_type,
+                                                    "%s encountered the following validation error at %s time: %s, type: %s in "
+                                                    "Descriptor in binding #%" PRIu32 " index %" PRIu32 "is used by %s.",
+                                                    report_data->FormatHandle(set).c_str(), caller,
+                                                    report_data->FormatHandle(image_view).c_str(),
+                                                    string_VkImageViewType(image_view_ci.viewType), binding, index,
+                                                    report_data->FormatHandle(sampler_state->sampler).c_str());
+                                }
+
+                                // sampler must not be used with any of the SPIR-V OpImageSample* or OpImageSparseSample*
+                                // instructions with ImplicitLod, Dref or Proj in their name
+                                if (reqs & DESCRIPTOR_REQ_SAMPLER_IMPLICITLOD_DREF_PROJ) {
+                                    auto set = descriptor_set->GetSet();
+                                    LogObjectList objlist(set);
+                                    objlist.add(image_view);
+                                    objlist.add(sampler_state->sampler);
+                                    return LogError(objlist, vuids.sampler_implicitLod_dref_proj,
+                                                    "%s encountered the following validation error at %s time: %s in "
+                                                    "Descriptor in binding #%" PRIu32 " index %" PRIu32
+                                                    " is used by %s that uses invalid operator.",
+                                                    report_data->FormatHandle(set).c_str(), caller,
+                                                    report_data->FormatHandle(image_view).c_str(), binding, index,
+                                                    report_data->FormatHandle(sampler_state->sampler).c_str());
+                                }
+
+                                // sampler must not be used with any of the SPIR-V OpImageSample* or OpImageSparseSample*
+                                // instructions that includes a LOD bias or any offset values
+                                if (reqs & DESCRIPTOR_REQ_SAMPLER_BIAS_OFFSET) {
+                                    auto set = descriptor_set->GetSet();
+                                    LogObjectList objlist(set);
+                                    objlist.add(image_view);
+                                    objlist.add(sampler_state->sampler);
+                                    return LogError(objlist, vuids.sampler_bias_offset,
+                                                    "%s encountered the following validation error at %s time: %s in "
+                                                    "Descriptor in binding #%" PRIu32 " index %" PRIu32
+                                                    " is used by %s that uses invalid bias or offset operator.",
+                                                    report_data->FormatHandle(set).c_str(), caller,
+                                                    report_data->FormatHandle(image_view).c_str(), binding, index,
+                                                    report_data->FormatHandle(sampler_state->sampler).c_str());
+                                }
                             }
                         }
                     }
@@ -1161,6 +1253,16 @@ bool CoreChecks::ValidateDescriptorSetBindingData(VkPipelineBindPoint bind_point
                                 report_data->FormatHandle(buffer_view).c_str(),
                                 string_VkFormat(buffer_view_state->create_info.format));
                         }
+
+                        if (ValidateUnprotectedBuffer(cb_node, buffer_view_state->buffer_state.get(), caller,
+                                                      vuids.unprotected_command_buffer)) {
+                            return true;
+                        }
+                        if (binding_info.second.is_writable &&
+                            ValidateProtectedBuffer(cb_node, buffer_view_state->buffer_state.get(), caller,
+                                                    vuids.protected_command_buffer)) {
+                            return true;
+                        }
                     }
                 } else if (descriptor_class == DescriptorClass::AccelerationStructure) {
                     // Verify that acceleration structures are valid
@@ -1189,6 +1291,10 @@ bool CoreChecks::ValidateDescriptorSetBindingData(VkPipelineBindPoint bind_point
                         }
                     }
                 }
+
+                // If the validation is related to both of image and sampler,
+                // please leave it in (descriptor_class == DescriptorClass::ImageSampler || descriptor_class ==
+                // DescriptorClass::Image) Here is to validate for only sampler.
                 if (descriptor_class == DescriptorClass::ImageSampler || descriptor_class == DescriptorClass::PlainSampler) {
                     // Verify Sampler still valid
                     VkSampler sampler;
@@ -1219,100 +1325,6 @@ bool CoreChecks::ValidateDescriptorSetBindingData(VkPipelineBindPoint bind_point
                                             report_data->FormatHandle(sampler).c_str(),
                                             report_data->FormatHandle(descriptor_set->GetSet()).c_str(),
                                             report_data->FormatHandle(sampler_state->samplerConversion).c_str());
-                        }
-                    }
-                    // TODO: Validate 04015 for DescriptorClass::PlainSampler
-                    if (descriptor_class == DescriptorClass::ImageSampler) {
-                        const IMAGE_VIEW_STATE *image_view_state;
-                        image_view_state = static_cast<const ImageSamplerDescriptor *>(descriptor)->GetImageViewState();
-                        if (image_view_state) {
-                            if ((sampler_state->createInfo.borderColor == VK_BORDER_COLOR_INT_CUSTOM_EXT ||
-                                 sampler_state->createInfo.borderColor == VK_BORDER_COLOR_FLOAT_CUSTOM_EXT) &&
-                                (sampler_state->customCreateInfo.format == VK_FORMAT_UNDEFINED)) {
-                                if (image_view_state->create_info.format == VK_FORMAT_B4G4R4A4_UNORM_PACK16 ||
-                                    image_view_state->create_info.format == VK_FORMAT_B5G6R5_UNORM_PACK16 ||
-                                    image_view_state->create_info.format == VK_FORMAT_B5G5R5A1_UNORM_PACK16) {
-                                    auto set = descriptor_set->GetSet();
-                                    LogObjectList objlist(set);
-                                    objlist.add(sampler);
-                                    objlist.add(image_view_state->image_view);
-                                    return LogError(objlist, "VUID-VkSamplerCustomBorderColorCreateInfoEXT-format-04015",
-                                                    "%s encountered the following validation error at %s time: Sampler %s in "
-                                                    "binding #%" PRIu32 " index %" PRIu32
-                                                    " has a custom border color with format = VK_FORMAT_UNDEFINED and is used to "
-                                                    "sample an image view %s with format %s",
-                                                    report_data->FormatHandle(set).c_str(), caller,
-                                                    report_data->FormatHandle(sampler).c_str(), binding, index,
-                                                    report_data->FormatHandle(image_view_state->image_view).c_str(),
-                                                    string_VkFormat(image_view_state->create_info.format));
-                                }
-                            }
-                            VkFilter sampler_mag_filter = sampler_state->createInfo.magFilter;
-                            VkFilter sampler_min_filter = sampler_state->createInfo.minFilter;
-                            if ((sampler_mag_filter == VK_FILTER_LINEAR || sampler_min_filter == VK_FILTER_LINEAR) &&
-                                !(image_view_state->format_features & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)) {
-                                auto set = descriptor_set->GetSet();
-                                LogObjectList objlist(set);
-                                objlist.add(sampler);
-                                objlist.add(image_view_state->image_view);
-                                return LogError(objlist, vuids.linear_sampler,
-                                                "sampler (%s) in descriptor set (%s) "
-                                                "is set to use VK_FILTER_LINEAR, then image view's (%s"
-                                                ") format (%s) MUST "
-                                                "contain VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT in its format features.",
-                                                report_data->FormatHandle(sampler).c_str(), report_data->FormatHandle(set).c_str(),
-                                                report_data->FormatHandle(image_view_state->image_view).c_str(),
-                                                string_VkFormat(image_view_state->create_info.format));
-                            }
-                            if ((sampler_mag_filter == VK_FILTER_CUBIC_EXT || sampler_min_filter == VK_FILTER_CUBIC_EXT) &&
-                                !(image_view_state->format_features & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_CUBIC_BIT_EXT)) {
-                                auto set = descriptor_set->GetSet();
-                                LogObjectList objlist(set);
-                                objlist.add(sampler);
-                                objlist.add(image_view_state->image_view);
-                                return LogError(
-                                    objlist, vuids.cubic_sampler,
-                                    "sampler (%s) in descriptor set (%s) "
-                                    "is set to use VK_FILTER_CUBIC_EXT, then image view's (%s"
-                                    ") format (%s) MUST "
-                                    "contain VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_CUBIC_BIT_EXT in its format features.",
-                                    report_data->FormatHandle(sampler).c_str(), report_data->FormatHandle(set).c_str(),
-                                    report_data->FormatHandle(image_view_state->image_view).c_str(),
-                                    string_VkFormat(image_view_state->create_info.format));
-                            }
-
-                            const IMAGE_STATE *image_state;
-                            image_state = GetImageState(image_view_state->create_info.image);
-                            if ((image_state->createInfo.flags & VK_IMAGE_CREATE_CORNER_SAMPLED_BIT_NV) &&
-                                (sampler_state->createInfo.addressModeU != VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE ||
-                                 sampler_state->createInfo.addressModeV != VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE ||
-                                 sampler_state->createInfo.addressModeW != VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)) {
-                                std::string address_mode_letter =
-                                    (sampler_state->createInfo.addressModeU != VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
-                                        ? "U"
-                                        : (sampler_state->createInfo.addressModeV != VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE) ? "V"
-                                                                                                                            : "W";
-                                VkSamplerAddressMode address_mode =
-                                    (sampler_state->createInfo.addressModeU != VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
-                                        ? sampler_state->createInfo.addressModeU
-                                        : (sampler_state->createInfo.addressModeV != VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
-                                              ? sampler_state->createInfo.addressModeV
-                                              : sampler_state->createInfo.addressModeW;
-                                auto set = descriptor_set->GetSet();
-                                LogObjectList objlist(set);
-                                objlist.add(sampler);
-                                objlist.add(image_state->image);
-                                objlist.add(image_view_state->image_view);
-                                return LogError(
-                                    objlist, vuids.corner_sampled_address_mode,
-                                    "image (%s) in image view (%s) in descriptor set (%s) is created with flag "
-                                    "VK_IMAGE_CREATE_CORNER_SAMPLED_BIT_NV and can only be sampled using "
-                                    "VK_SAMPLER_ADDRESS_MODE_CLAMP_EDGE, but sampler (%s) has createInfo.addressMode%s set to %s.",
-                                    report_data->FormatHandle(image_state->image).c_str(),
-                                    report_data->FormatHandle(image_view_state->image_view).c_str(),
-                                    report_data->FormatHandle(set).c_str(), report_data->FormatHandle(sampler).c_str(),
-                                    address_mode_letter.c_str(), string_VkSamplerAddressMode(address_mode));
-                            }
                         }
                     }
                 }
@@ -1625,7 +1637,7 @@ void cvdescriptorset::DescriptorSet::PerformCopyUpdate(ValidationStateTracker *d
 //   to be used in a draw by the given cb_node
 void cvdescriptorset::DescriptorSet::UpdateDrawState(ValidationStateTracker *device_data, CMD_BUFFER_STATE *cb_node,
                                                      CMD_TYPE cmd_type, const PIPELINE_STATE *pipe,
-                                                     const std::map<uint32_t, DescriptorReqirement> &binding_req_map,
+                                                     const std::unordered_map<uint32_t, DescriptorReqirement> &binding_req_map,
                                                      const char *function) {
     if (!device_data->disabled[command_buffer_state] && !IsPushDescriptor()) {
         // bind cb to this descriptor set
@@ -1647,15 +1659,6 @@ void cvdescriptorset::DescriptorSet::UpdateDrawState(ValidationStateTracker *dev
     // For the active slots, use set# to look up descriptorSet from boundDescriptorSets, and bind all of that descriptor set's
     // resources
     CMD_BUFFER_STATE::CmdDrawDispatchInfo cmd_info = {};
-    if (pipe->graphicsPipelineCI.sType == VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO) {
-        cmd_info.bind_point = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    } else if (pipe->computePipelineCI.sType == VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO) {
-        cmd_info.bind_point = VK_PIPELINE_BIND_POINT_COMPUTE;
-    } else if (pipe->raytracingPipelineCI.sType == VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR ||
-               pipe->raytracingPipelineCI.sType == VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_NV) {
-        cmd_info.bind_point = VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR;
-    }
-
     for (auto binding_req_pair : binding_req_map) {
         auto index = p_layout_->GetIndexFromBinding(binding_req_pair.first);
 
@@ -2848,7 +2851,7 @@ bool CoreChecks::ValidateAllocateDescriptorSets(const VkDescriptorSetAllocateInf
 const BindingReqMap &cvdescriptorset::PrefilterBindRequestMap::FilteredMap(const CMD_BUFFER_STATE &cb_state,
                                                                            const PIPELINE_STATE &pipeline) {
     if (IsManyDescriptors()) {
-        filtered_map_.reset(new std::map<uint32_t, DescriptorReqirement>());
+        filtered_map_.reset(new std::unordered_map<uint32_t, DescriptorReqirement>());
         descriptor_set_.FilterBindingReqs(cb_state, pipeline, orig_map_, filtered_map_.get());
         return *filtered_map_;
     }

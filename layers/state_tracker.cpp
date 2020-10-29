@@ -272,22 +272,20 @@ std::vector<const IMAGE_VIEW_STATE *> ValidationStateTracker::GetCurrentAttachme
 }
 
 PIPELINE_STATE *GetCurrentPipelineFromCommandBuffer(const CMD_BUFFER_STATE &cmd, VkPipelineBindPoint pipelineBindPoint) {
-    const auto last_bound_it = cmd.lastBound.find(pipelineBindPoint);
-    if (last_bound_it == cmd.lastBound.cend()) {
-        return nullptr;
-    }
-    return last_bound_it->second.pipeline_state;
+    const auto lv_bind_point = ConvertToLvlBindPoint(pipelineBindPoint);
+    return cmd.lastBound[lv_bind_point].pipeline_state;
 }
 
 void GetCurrentPipelineAndDesriptorSetsFromCommandBuffer(const CMD_BUFFER_STATE &cmd, VkPipelineBindPoint pipelineBindPoint,
                                                          const PIPELINE_STATE **rtn_pipe,
                                                          const std::vector<LAST_BOUND_STATE::PER_SET> **rtn_sets) {
-    const auto last_bound_it = cmd.lastBound.find(pipelineBindPoint);
-    if (last_bound_it == cmd.lastBound.cend()) {
+    const auto lv_bind_point = ConvertToLvlBindPoint(pipelineBindPoint);
+    const auto &last_bound_it = cmd.lastBound[lv_bind_point];
+    if (!last_bound_it.IsUsing()) {
         return;
     }
-    *rtn_pipe = last_bound_it->second.pipeline_state;
-    *rtn_sets = &(last_bound_it->second.per_set);
+    *rtn_pipe = last_bound_it.pipeline_state;
+    *rtn_sets = &(last_bound_it.per_set);
 }
 
 #ifdef VK_USE_PLATFORM_ANDROID_KHR
@@ -642,6 +640,22 @@ void ValidationStateTracker::PostCallRecordCreateImageView(VkDevice device, cons
                                                                                      : format_properties.optimalTilingFeatures;
     }
 
+    // filter_cubic_props is used in CmdDraw validation. But it takes a lot of performance if it does in CmdDraw.
+    image_view_state->filter_cubic_props = lvl_init_struct<VkFilterCubicImageViewImageFormatPropertiesEXT>();
+    if (IsExtEnabled(device_extensions.vk_ext_filter_cubic)) {
+        auto imageview_format_info = lvl_init_struct<VkPhysicalDeviceImageViewImageFormatInfoEXT>();
+        imageview_format_info.imageViewType = pCreateInfo->viewType;
+        auto image_format_info = lvl_init_struct<VkPhysicalDeviceImageFormatInfo2>(&imageview_format_info);
+        image_format_info.type = image_state->createInfo.imageType;
+        image_format_info.format = image_state->createInfo.format;
+        image_format_info.tiling = image_state->createInfo.tiling;
+        image_format_info.usage = image_state->createInfo.usage;
+        image_format_info.flags = image_state->createInfo.flags;
+
+        auto image_format_properties = lvl_init_struct<VkImageFormatProperties2>(&image_view_state->filter_cubic_props);
+
+        DispatchGetPhysicalDeviceImageFormatProperties2(physical_device, &image_format_info, &image_format_properties);
+    }
     imageViewMap.insert(std::make_pair(*pView, std::move(image_view_state)));
 }
 
@@ -1152,7 +1166,8 @@ bool ValidationStateTracker::SetSparseMemBinding(const VkDeviceMemory mem, const
 
 void ValidationStateTracker::UpdateDrawState(CMD_BUFFER_STATE *cb_state, CMD_TYPE cmd_type, const VkPipelineBindPoint bind_point,
                                              const char *function) {
-    auto &state = cb_state->lastBound[bind_point];
+    const auto lv_bind_point = ConvertToLvlBindPoint(bind_point);
+    auto &state = cb_state->lastBound[lv_bind_point];
     PIPELINE_STATE *pPipe = state.pipeline_state;
     if (VK_NULL_HANDLE != state.pipeline_layout) {
         for (const auto &set_binding_pair : pPipe->active_slots) {
@@ -1407,7 +1422,7 @@ void ValidationStateTracker::ResetCommandBufferState(const VkCommandBuffer cb) {
         pCB->primitiveTopology = VK_PRIMITIVE_TOPOLOGY_MAX_ENUM;
 
         for (auto &item : pCB->lastBound) {
-            item.second.reset();
+            item.reset();
         }
 
         pCB->activeRenderPassBeginInfo = safe_VkRenderPassBeginInfo();
@@ -1832,6 +1847,11 @@ void ValidationStateTracker::PostCallRecordCreateDevice(VkPhysicalDevice gpu, co
         state_tracker->enabled_features.extended_dynamic_state_features = *extended_dynamic_state_features;
     }
 
+    const auto *multiview_features = lvl_find_in_chain<VkPhysicalDeviceMultiviewFeatures>(pCreateInfo->pNext);
+    if (multiview_features) {
+        state_tracker->enabled_features.multiview_features = *multiview_features;
+    }
+
     // Store physical device properties and physical device mem limits into CoreChecks structs
     DispatchGetPhysicalDeviceMemoryProperties(gpu, &state_tracker->phys_dev_mem_props);
     DispatchGetPhysicalDeviceProperties(gpu, &state_tracker->phys_dev_props);
@@ -1924,6 +1944,7 @@ void ValidationStateTracker::PostCallRecordCreateDevice(VkPhysicalDevice gpu, co
     GetPhysicalDeviceExtProperties(gpu, dev_ext.vk_khr_performance_query, &phys_dev_props->performance_query_props);
     GetPhysicalDeviceExtProperties(gpu, dev_ext.vk_ext_sample_locations, &phys_dev_props->sample_locations_props);
     GetPhysicalDeviceExtProperties(gpu, dev_ext.vk_ext_custom_border_color, &phys_dev_props->custom_border_color_props);
+    GetPhysicalDeviceExtProperties(gpu, dev_ext.vk_khr_multiview, &phys_dev_props->multiview_props);
 
     if (!state_tracker->device_extensions.vk_feature_version_1_2 && dev_ext.vk_khr_timeline_semaphore) {
         VkPhysicalDeviceTimelineSemaphorePropertiesKHR timeline_semaphore_props;
@@ -3537,6 +3558,26 @@ void SetPipelineState(PIPELINE_STATE *pPipe) {
     }
 }
 
+void UpdateSamplerDescriptorsUsedByImage(LAST_BOUND_STATE &last_bound_state) {
+    if (!last_bound_state.pipeline_state) return;
+    if (last_bound_state.per_set.empty()) return;
+
+    for (auto &slot : last_bound_state.pipeline_state->active_slots) {
+        for (auto &req : slot.second) {
+            for (auto &samplers : req.second.samplers_used_by_image) {
+                for (auto &sampler : samplers) {
+                    if (sampler.first.sampler_slot.first < last_bound_state.per_set.size() &&
+                        last_bound_state.per_set[sampler.first.sampler_slot.first].bound_descriptor_set) {
+                        sampler.second = last_bound_state.per_set[sampler.first.sampler_slot.first]
+                                             .bound_descriptor_set->GetDescriptorFromBinding(sampler.first.sampler_slot.second,
+                                                                                             sampler.first.sampler_index);
+                    }
+                }
+            }
+        }
+    }
+}
+
 void ValidationStateTracker::PreCallRecordCmdBindPipeline(VkCommandBuffer commandBuffer, VkPipelineBindPoint pipelineBindPoint,
                                                           VkPipeline pipeline) {
     CMD_BUFFER_STATE *cb_state = GetCBState(commandBuffer);
@@ -3550,9 +3591,21 @@ void ValidationStateTracker::PreCallRecordCmdBindPipeline(VkCommandBuffer comman
         cb_state->dynamic_status = CBSTATUS_ALL_STATE_SET & (~cb_state->static_status);
     }
     ResetCommandBufferPushConstantDataIfIncompatible(cb_state, pipe_state->pipeline_layout->layout);
-    cb_state->lastBound[pipelineBindPoint].pipeline_state = pipe_state;
+    const auto lv_bind_point = ConvertToLvlBindPoint(pipelineBindPoint);
+    cb_state->lastBound[lv_bind_point].pipeline_state = pipe_state;
     SetPipelineState(pipe_state);
     AddCommandBufferBinding(pipe_state->cb_bindings, VulkanTypedHandle(pipeline, kVulkanObjectTypePipeline), cb_state);
+
+    for (auto &slot : pipe_state->active_slots) {
+        for (auto &req : slot.second) {
+            for (auto &sampler : req.second.samplers_used_by_image) {
+                for (auto &des : sampler) {
+                    des.second = nullptr;
+                }
+            }
+        }
+    }
+    UpdateSamplerDescriptorsUsedByImage(cb_state->lastBound[lv_bind_point]);
 }
 
 void ValidationStateTracker::PreCallRecordCmdSetViewport(VkCommandBuffer commandBuffer, uint32_t firstViewport,
@@ -3863,7 +3916,8 @@ void ValidationStateTracker::UpdateLastBoundDescriptorSets(CMD_BUFFER_STATE *cb_
     assert(last_binding_index < pipeline_layout->compat_for_set.size());
 
     // Some useful shorthand
-    auto &last_bound = cb_state->lastBound[pipeline_bind_point];
+    const auto lv_bind_point = ConvertToLvlBindPoint(pipeline_bind_point);
+    auto &last_bound = cb_state->lastBound[lv_bind_point];
     auto &pipe_compat_ids = pipeline_layout->compat_for_set;
     const uint32_t current_size = static_cast<uint32_t>(last_bound.per_set.size());
 
@@ -3950,14 +4004,16 @@ void ValidationStateTracker::PreCallRecordCmdBindDescriptorSets(VkCommandBuffer 
 
     // Resize binding arrays
     uint32_t last_set_index = firstSet + setCount - 1;
-    if (last_set_index >= cb_state->lastBound[pipelineBindPoint].per_set.size()) {
-        cb_state->lastBound[pipelineBindPoint].per_set.resize(last_set_index + 1);
+    const auto lv_bind_point = ConvertToLvlBindPoint(pipelineBindPoint);
+    if (last_set_index >= cb_state->lastBound[lv_bind_point].per_set.size()) {
+        cb_state->lastBound[lv_bind_point].per_set.resize(last_set_index + 1);
     }
 
     UpdateLastBoundDescriptorSets(cb_state, pipelineBindPoint, pipeline_layout, firstSet, setCount, pDescriptorSets, nullptr,
                                   dynamicOffsetCount, pDynamicOffsets);
-    cb_state->lastBound[pipelineBindPoint].pipeline_layout = layout;
+    cb_state->lastBound[lv_bind_point].pipeline_layout = layout;
     ResetCommandBufferPushConstantDataIfIncompatible(cb_state, layout);
+    UpdateSamplerDescriptorsUsedByImage(cb_state->lastBound[lv_bind_point]);
 }
 
 void ValidationStateTracker::RecordCmdPushDescriptorSetState(CMD_BUFFER_STATE *cb_state, VkPipelineBindPoint pipelineBindPoint,
@@ -3971,7 +4027,8 @@ void ValidationStateTracker::RecordCmdPushDescriptorSetState(CMD_BUFFER_STATE *c
 
     // We need a descriptor set to update the bindings with, compatible with the passed layout
     const auto dsl = pipeline_layout->set_layouts[set];
-    auto &last_bound = cb_state->lastBound[pipelineBindPoint];
+    const auto lv_bind_point = ConvertToLvlBindPoint(pipelineBindPoint);
+    auto &last_bound = cb_state->lastBound[lv_bind_point];
     auto &push_descriptor_set = last_bound.push_descriptor_set;
     // If we are disturbing the current push_desriptor_set clear it
     if (!push_descriptor_set || !CompatForSet(set, last_bound, pipeline_layout->compat_for_set)) {
@@ -4014,7 +4071,7 @@ void ValidationStateTracker::PostCallRecordCmdPushConstants(VkCommandBuffer comm
                 const auto it = cb_state->push_constant_data_update.find(flag);
 
                 if (it != cb_state->push_constant_data_update.end()) {
-                    std::memset(it->second.data() + offset, 1, static_cast<std::size_t>(size));
+                    std::memset(it->second.data() + offset, PC_Byte_Updated, static_cast<std::size_t>(size));
                 }
             }
             flags = flags >> 1;
@@ -5826,6 +5883,7 @@ void ValidationStateTracker::RecordPipelineShaderStage(VkPipelineShaderStageCrea
     for (const auto &use : stage_state->descriptor_uses) {
         // While validating shaders capture which slots are used by the pipeline
         const uint32_t slot = use.first.first;
+        pipeline->active_slots[slot][use.first.second].is_writable |= use.second.is_writable;
         auto &reqs = pipeline->active_slots[slot][use.first.second].reqs;
         reqs = descriptor_req(reqs | DescriptorTypeToReqs(module, use.second.type_id));
         if (use.second.is_atomic_operation) reqs = descriptor_req(reqs | DESCRIPTOR_REQ_VIEW_ATOMIC_OPERATION);
@@ -5838,11 +5896,10 @@ void ValidationStateTracker::RecordPipelineShaderStage(VkPipelineShaderStageCrea
             if (use.second.samplers_used_by_image.size() > samplers_used_by_image.size()) {
                 samplers_used_by_image.resize(use.second.samplers_used_by_image.size());
             }
-            std::map<VkDescriptorSet, const cvdescriptorset::Descriptor *> sampler_descriptors;
             uint32_t image_index = 0;
             for (const auto &samplers : use.second.samplers_used_by_image) {
                 for (const auto &sampler : samplers) {
-                    samplers_used_by_image[image_index].emplace(sampler, sampler_descriptors);
+                    samplers_used_by_image[image_index].emplace(sampler, nullptr);
                 }
                 ++image_index;
             }
@@ -5882,15 +5939,15 @@ void ValidationStateTracker::ResetCommandBufferPushConstantDataIfIncompatible(CM
 
                     if (it != cb_state->push_constant_data_update.end()) {
                         if (it->second.size() < push_constant_range.offset) {
-                            it->second.resize(push_constant_range.offset, -1);
+                            it->second.resize(push_constant_range.offset, PC_Byte_Not_Set);
                         }
                         if (it->second.size() < size) {
-                            it->second.resize(size, 0);
+                            it->second.resize(size, PC_Byte_Not_Updated);
                         }
                     } else {
-                        std::vector<int8_t> bytes;
-                        bytes.resize(push_constant_range.offset, -1);
-                        bytes.resize(size, 0);
+                        std::vector<uint8_t> bytes;
+                        bytes.resize(push_constant_range.offset, PC_Byte_Not_Set);
+                        bytes.resize(size, PC_Byte_Not_Updated);
                         cb_state->push_constant_data_update[flag] = bytes;
                     }
                 }
